@@ -1,0 +1,25 @@
+﻿# Build
+bridge/build/
+bridge/dist/
+bridge/*.spec
+bridge/.certs/
+bridge/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+
+# Flutter (old)
+.dart_tool/
+build/
+*.iml
+.gradle/
+android/.gradle/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+gradlePluginPortal()
+google()
+mavenCentral()
+
+def aliyunRepos = [
+    "https://maven.aliyun.com/repository/public",
+    "https://maven.aliyun.com/repository/google",
+    "https://maven.aliyun.com/repository/gradle-plugin",
+]
+for (repoUrl in aliyunRepos) {
+    maven { url repoUrl }
+}
