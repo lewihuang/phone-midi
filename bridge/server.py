@@ -379,7 +379,7 @@ class BridgeApp:
                   relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10).pack(side=tk.LEFT, padx=6)
 
         # Author
-        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#5A5F58").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
+        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
     # ── Running View ───────────────────────────────────────────────────────
     def _build_running(self, device_name, port, protocol):
@@ -392,7 +392,7 @@ class BridgeApp:
         ip = _local_ip()
         url = f"{protocol}://{ip}:{port}"
         tk.Label(self.root, text=url, font=FONT_H2, bg=BG, fg=FG).pack(pady=(0, 2))
-        tk.Label(self.root, text="手机用 Chrome 或 Edge 打开上方网址，点击启动传感器", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
+        tk.Label(self.root, text="手机用 Chrome 或 Safari 打开上方网址，点击启动传感器", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
 
         # Status card
         card = tk.Frame(self.root, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
@@ -415,7 +415,7 @@ class BridgeApp:
                   font=FONT_BOLD, bg=RED, fg=BG, activebackground="#D32F2F",
                   relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10).pack(pady=(12, 20))
 
-        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#5A5F58").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
+        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
         # Start status polling
         self._status_timer = self.root.after(500, self._poll_status)
