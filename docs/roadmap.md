@@ -6,6 +6,21 @@
 
 ---
 
+## Phase 2.5: Mode B 翻转 + 模式中心 UI（🔄 2026-07-09）
+
+→ [mode-b-palm-flip.md](spec/mode-b-palm-flip.md) · [ui-mode-centric.md](spec/ui-mode-centric.md)
+
+| 交付 | 说明 |
+|------|------|
+| `fusion.js` PROFILES | lift / flip 独立 storage |
+| 主页模式卡片 | A/B/C 各自状态与校准入口 |
+| `/calibrate-lift.html` | Mode A 校准 |
+| `/calibrate-flip.html` | Mode B 校准 |
+| Mode B | `fused_flip` ∈ [0,1] |
+| Mode C | 原摇晃弯音（原 Mode B） |
+
+---
+
 ## Phase 2: Mode A 多轴融合（✅ 已完成 2026-07-09）
 
 手机 `(β, γ)` 融合为单标量 → CC 0–127。每人通过校准页自定端点。
@@ -15,9 +30,9 @@
 | 交付 | 说明 |
 |------|------|
 | `web/fusion.js` | 端点投影融合 + localStorage |
-| `/calibrate.html` | 用户三步校准（垂手=0，抬最高=127） |
+| `/calibrate-lift.html` | 用户三步校准（垂手=0，抬最高=127） |
 | `/fusion-calibrate.html` | 开发者调试（轨迹、JSON 导出） |
-| 主页「校准设备」 | 入口 + 已校准/未校准状态 |
+| 主页模式卡片 | 各 Mode 校准状态与入口 |
 | Mode A | 发送 `fused_lift` ∈ [0,1] |
 | Bridge | `default.json` axis=`fused_lift`, range 0–1 |
 

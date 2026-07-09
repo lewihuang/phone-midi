@@ -1,9 +1,41 @@
-// Phone MIDI CC — Fusion Calibrate (developer debug page)
+// Phone MIDI CC — Fusion Calibrate (developer debug, profile-driven)
 (() => {
   'use strict';
 
   const F = window.PhoneMidiFusion;
+  const profileId = document.body.dataset.profile || 'lift';
+  const profile = F.resolveProfile(profileId);
   const REC_INTERVAL_MS = 40;
+
+  const UI = {
+    lift: {
+      pageTitle: 'Mode A 融合标定',
+      trajHint: '缓慢从垂手抬至最高，用于检查融合值是否单调。',
+      minBtn: '标定为 MIN (0)<br><span style="font-size:11px;font-weight:400">自然垂手</span>',
+      maxBtn: '标定为 MAX (127)<br><span style="font-size:11px;font-weight:400">抬手最高</span>',
+      minToast: '已标定 MIN (0)',
+      maxToast: '已标定 MAX (127)',
+      barGradient: 'linear-gradient(90deg, #3b82f6, #8b5cf6)',
+      trajColor: '#3b82f6',
+    },
+    flip: {
+      pageTitle: 'Mode B 融合标定',
+      trajHint: '肘部尽量固定，缓慢从自然握姿翻到极限，检查融合值是否单调。',
+      minBtn: '标定为 MIN (0)<br><span style="font-size:11px;font-weight:400">自然握姿</span>',
+      maxBtn: '标定为 MAX (127)<br><span style="font-size:11px;font-weight:400">翻转极限</span>',
+      minToast: '已标定 MIN (0)',
+      maxToast: '已标定 MAX (127)',
+      barGradient: 'linear-gradient(90deg, #7c3aed, #c084fc)',
+      trajColor: '#8b5cf6',
+    },
+  };
+  const ui = UI[profileId] || UI.lift;
+
+  document.title = ui.pageTitle + ' — Phone MIDI CC';
+  const elPageTitle = document.getElementById('pageTitle');
+  if (elPageTitle) elPageTitle.textContent = ui.pageTitle;
+  const elTrajHint = document.getElementById('trajHint');
+  if (elTrajHint) elTrajHint.textContent = ui.trajHint;
 
   const elStatus = document.getElementById('status');
   const elPreviewPanel = document.getElementById('previewPanel');
@@ -16,6 +48,7 @@
   const elAnchorMinInfo = document.getElementById('anchorMinInfo');
   const elAnchorMaxInfo = document.getElementById('anchorMaxInfo');
   const elAnchorWarn = document.getElementById('anchorWarn');
+  const elCrossAxis = document.getElementById('crossAxis');
   const elFusedT = document.getElementById('fusedT');
   const elCcSim = document.getElementById('ccSim');
   const elCcBar = document.getElementById('ccBar');
@@ -37,23 +70,91 @@
   const elExportArea = document.getElementById('exportArea');
   const elExportText = document.getElementById('exportText');
   const elError = document.getElementById('error');
-  const elHint = document.getElementById('hint');
   const elOrientationMeta = document.getElementById('orientationMeta');
   const elToast = document.getElementById('toast');
+
+  const usesGravity = profile.input === 'gravity';
+  const elRawGx = document.getElementById('rawGx');
+  const elRawGy = document.getElementById('rawGy');
+  const elRawGz = document.getElementById('rawGz');
+  const elRawGravityRow = document.getElementById('rawGravityRow');
+  const elFusionSource = document.getElementById('fusionSource');
+  const elStabilizerRow = document.getElementById('stabilizerRow');
+  const elRngGravityAvg = document.getElementById('rngGravityAvg');
+  const elLblGravityAvg = document.getElementById('lblGravityAvg');
+  const elRawTRaw = document.getElementById('rawTRaw');
 
   let active = false;
   let busy = false;
   let sessionStartedAt = null;
   let liveBeta = null;
   let liveGamma = null;
+  let liveG = null;
+  let liveFlip = null;
+  let flipSession = null;
   const anchors = { min: null, max: null };
   let recording = false;
   let recStartMs = 0;
   let recTimer = null;
   let trajectory = null;
 
+  if (elBtnAnchorMin) elBtnAnchorMin.innerHTML = ui.minBtn;
+  if (elBtnAnchorMax) elBtnAnchorMax.innerHTML = ui.maxBtn;
+  if (elFusionSource && usesGravity) {
+    elFusionSource.textContent = '融合源：重力向量 · 主控默认平均 '
+      + F.getFlipProductionGravityAvgMs() + 'ms';
+  }
+  if (usesGravity && F.createFlipStabilizerSession) {
+    flipSession = F.createFlipStabilizerSession({ gravityAvgMs: 50 });
+  }
+  if (elStabilizerRow) elStabilizerRow.style.display = usesGravity ? '' : 'none';
+  const elStabilizerHint = document.getElementById('stabilizerHint');
+  if (elStabilizerHint) elStabilizerHint.style.display = usesGravity ? '' : 'none';
+  if (elCcBar) elCcBar.style.background = ui.barGradient;
+
   function fmt(v) {
     return typeof v === 'number' && !Number.isNaN(v) ? v.toFixed(1) : '—';
+  }
+
+  function axisAngleDeg(aAnchors, bAnchors) {
+    if (!F.anchorsReady(aAnchors) || !F.anchorsReady(bAnchors)) return null;
+    const da = {
+      b: aAnchors.max.beta - aAnchors.min.beta,
+      g: aAnchors.max.gamma - aAnchors.min.gamma,
+    };
+    const db = {
+      b: bAnchors.max.beta - bAnchors.min.beta,
+      g: bAnchors.max.gamma - bAnchors.min.gamma,
+    };
+    const dot = da.b * db.b + da.g * db.g;
+    const magA = Math.sqrt(da.b * da.b + da.g * da.g);
+    const magB = Math.sqrt(db.b * db.b + db.g * db.g);
+    if (magA < 1e-6 || magB < 1e-6) return null;
+    const cos = Math.max(-1, Math.min(1, dot / (magA * magB)));
+    return Math.round(Math.acos(cos) * 1800 / Math.PI) / 10;
+  }
+
+  function updateCrossAxisInfo() {
+    if (!elCrossAxis || usesGravity) {
+      if (elCrossAxis) elCrossAxis.style.display = 'none';
+      return;
+    }
+    const otherId = profileId === 'flip' ? 'lift' : 'flip';
+    const other = F.loadCalibration(otherId);
+    if (!F.anchorsReady(anchors) || !other || !F.anchorsReady(other.anchors)) {
+      elCrossAxis.style.display = 'none';
+      return;
+    }
+    const angle = axisAngleDeg(anchors, other.anchors);
+    if (angle == null) {
+      elCrossAxis.style.display = 'none';
+      return;
+    }
+    elCrossAxis.style.display = '';
+    const warn = angle < 25;
+    elCrossAxis.className = warn ? 'warn' : 'meta';
+    elCrossAxis.textContent = '与 ' + otherId + ' 轴夹角 ' + angle + '°'
+      + (warn ? '（过近，动作可能混叠）' : '');
   }
 
   function setStatus(on, text) {
@@ -83,17 +184,57 @@
     };
   }
 
+  function getStabilizerOpts() {
+    if (!elRngGravityAvg) return { gravityAvgMs: 50 };
+    return { gravityAvgMs: parseInt(elRngGravityAvg.value, 10) };
+  }
+
+  function syncGravityAvgLabel() {
+    if (!elLblGravityAvg || !elRngGravityAvg) return;
+    const ms = parseInt(elRngGravityAvg.value, 10);
+    elLblGravityAvg.textContent = ms === 0 ? '0（瞬时）' : ms + ' ms';
+    if (flipSession) flipSession.setOptions(getStabilizerOpts());
+  }
+
+  function feedFlip(event) {
+    if (flipSession) {
+      return flipSession.feed(event, anchors, getFusionConfig());
+    }
+    return F.feedFlipMotion(event, anchors, getFusionConfig());
+  }
+
+  function resetFlipPipeline() {
+    if (flipSession) flipSession.reset();
+    else F.resetFlipMotion();
+  }
+
   function computeT() {
+    if (usesGravity) {
+      if (!liveFlip) return null;
+      return liveFlip.t;
+    }
     return F.computeFusedT(liveBeta, liveGamma, anchors, getFusionConfig());
   }
 
+  function fmt3(v) {
+    return typeof v === 'number' && !Number.isNaN(v) ? v.toFixed(2) : '—';
+  }
+
   function updatePreview() {
-    const ready = F.anchorsReady(anchors);
+    const ready = F.anchorsReadyForProfile(profileId, anchors);
     elPreviewPanel.classList.toggle('disabled', !ready);
     elParamPanel.classList.toggle('disabled', !ready);
     elTrajPanel.classList.toggle('disabled', !ready);
     elRawBeta.textContent = fmt(liveBeta);
     elRawGamma.textContent = fmt(liveGamma);
+    if (elRawGravityRow) elRawGravityRow.style.display = usesGravity ? '' : 'none';
+    const elRawTRow = document.getElementById('rawTRow');
+    if (elRawTRow) elRawTRow.style.display = usesGravity ? '' : 'none';
+    if (liveG && usesGravity) {
+      if (elRawGx) elRawGx.textContent = fmt3(liveG.x);
+      if (elRawGy) elRawGy.textContent = fmt3(liveG.y);
+      if (elRawGz) elRawGz.textContent = fmt3(liveG.z);
+    }
     if (!ready) {
       elFusedT.textContent = '—';
       elCcSim.textContent = '—';
@@ -102,32 +243,51 @@
     }
     const t = computeT();
     elFusedT.textContent = t != null ? t.toFixed(3) : '—';
+    if (elRawTRaw) {
+      elRawTRaw.textContent = (usesGravity && liveFlip && liveFlip.t_raw != null)
+        ? liveFlip.t_raw.toFixed(3)
+        : '—';
+    }
+    const elFusedTInline = document.getElementById('fusedTInline');
+    if (elFusedTInline) {
+      elFusedTInline.textContent = t != null ? t.toFixed(3) : '—';
+    }
     elCcSim.textContent = t != null ? String(F.fusedToCc(t)) : '—';
     elCcBar.style.width = (t != null ? t * 100 : 0).toFixed(1) + '%';
   }
 
   function renderAnchorInfo() {
     if (anchors.min) {
-      elAnchorMinInfo.innerHTML = 'MIN: β=' + fmt(anchors.min.beta) + ' γ=' + fmt(anchors.min.gamma) + ' <span class="ok">✓</span>';
+      if (usesGravity) {
+        elAnchorMinInfo.innerHTML = 'MIN: g=(' + fmt3(anchors.min.x) + ',' + fmt3(anchors.min.y) + ',' + fmt3(anchors.min.z) + ') <span class="ok">✓</span>';
+      } else {
+        elAnchorMinInfo.innerHTML = 'MIN: β=' + fmt(anchors.min.beta) + ' γ=' + fmt(anchors.min.gamma) + ' <span class="ok">✓</span>';
+      }
       elBtnAnchorMin.classList.add('btn-accent');
     } else {
       elAnchorMinInfo.textContent = 'MIN: 未标定';
       elBtnAnchorMin.classList.remove('btn-accent');
     }
     if (anchors.max) {
-      elAnchorMaxInfo.innerHTML = 'MAX: β=' + fmt(anchors.max.beta) + ' γ=' + fmt(anchors.max.gamma) + ' <span class="ok">✓</span>';
+      if (usesGravity) {
+        elAnchorMaxInfo.innerHTML = 'MAX: g=(' + fmt3(anchors.max.x) + ',' + fmt3(anchors.max.y) + ',' + fmt3(anchors.max.z) + ') <span class="ok">✓</span>';
+      } else {
+        elAnchorMaxInfo.innerHTML = 'MAX: β=' + fmt(anchors.max.beta) + ' γ=' + fmt(anchors.max.gamma) + ' <span class="ok">✓</span>';
+      }
       elBtnAnchorMax.classList.add('btn-accent');
     } else {
       elAnchorMaxInfo.textContent = 'MAX: 未标定';
       elBtnAnchorMax.classList.remove('btn-accent');
     }
-    const sep = F.anchorSeparation(anchors);
-    if (F.anchorsReady(anchors) && sep < F.MIN_SEP) {
+    const sep = F.anchorSeparationForProfile(profileId, anchors);
+    if (F.anchorsReadyForProfile(profileId, anchors) && sep < F.MIN_SEP) {
+      const unit = usesGravity ? '°（向量夹角）' : '°';
       elAnchorWarn.style.display = '';
-      elAnchorWarn.textContent = '端点过近（|' + sep.toFixed(1) + '°|），请重新标定';
+      elAnchorWarn.textContent = '端点过近（|' + sep.toFixed(1) + unit + '），请重新标定';
     } else {
       elAnchorWarn.style.display = 'none';
     }
+    updateCrossAxisInfo();
     updatePreview();
   }
 
@@ -137,10 +297,10 @@
     elBtnAnchorMin.disabled = true;
     elBtnAnchorMax.disabled = true;
     try {
-      anchors[which] = await F.captureAnchorSamples();
+      anchors[which] = await F.captureAnchorSamplesForProfile(profileId);
       showError('');
       renderAnchorInfo();
-      showToast(which === 'min' ? '已标定 MIN (0)' : '已标定 MAX (127)');
+      showToast(which === 'min' ? ui.minToast : ui.maxToast);
     } catch (e) {
       showError(e.message);
     } finally {
@@ -163,7 +323,14 @@
   }
 
   function onModeChange() {
-    elWeightPanel.classList.toggle('show', elSelMode.value === 'weighted_linear');
+    if (usesGravity) {
+      elWeightPanel.classList.remove('show');
+      elSelMode.value = 'endpoint_projection';
+      elSelMode.disabled = true;
+    } else {
+      elSelMode.disabled = false;
+      elWeightPanel.classList.toggle('show', elSelMode.value === 'weighted_linear');
+    }
     updatePreview();
     if (trajectory) drawTrajectory();
   }
@@ -199,7 +366,7 @@
     ctx.moveTo(pad, pad);
     ctx.lineTo(pad, h - pad);
     ctx.stroke();
-    ctx.strokeStyle = '#3b82f6';
+    ctx.strokeStyle = ui.trajColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     const dur = trajectory.duration_ms || 1;
@@ -213,7 +380,7 @@
   }
 
   function startRecording() {
-    if (!F.anchorsReady(anchors) || recording) return;
+    if (!F.anchorsReadyForProfile(profileId, anchors) || recording) return;
     recording = true;
     recStartMs = performance.now();
     trajectory = { samples: [], duration_ms: 0, sample_count: 0, monotonicity: null };
@@ -222,15 +389,26 @@
     elBtnRecStart.textContent = '录制中…';
     elBtnRecStop.disabled = false;
     recTimer = setInterval(() => {
-      if (liveBeta == null) return;
       const t = computeT();
-      trajectory.samples.push({
+      if (t == null) return;
+      const sample = {
         t_ms: Math.round(performance.now() - recStartMs),
-        beta: Math.round(liveBeta * 10) / 10,
-        gamma: Math.round(liveGamma * 10) / 10,
         fused_t: Math.round(t * 1000) / 1000,
         cc_sim: F.fusedToCc(t),
-      });
+      };
+      if (usesGravity && liveFlip) {
+        sample.fused_t_raw = Math.round(liveFlip.t_raw * 1000) / 1000;
+      }
+      if (usesGravity && liveG) {
+        sample.gx = Math.round(liveG.x * 1000) / 1000;
+        sample.gy = Math.round(liveG.y * 1000) / 1000;
+        sample.gz = Math.round(liveG.z * 1000) / 1000;
+      }
+      if (liveBeta != null) {
+        sample.beta = Math.round(liveBeta * 10) / 10;
+        sample.gamma = Math.round(liveGamma * 10) / 10;
+      }
+      trajectory.samples.push(sample);
     }, REC_INTERVAL_MS);
   }
 
@@ -250,16 +428,35 @@
     trajectory.sample_count = trajectory.samples.length;
     trajectory.monotonicity = analyzeMonotonicity(trajectory.samples);
     const m = trajectory.monotonicity;
-    elTrajMeta.textContent = trajectory.sample_count + ' 点 · 回跳 ' + m.violations + ' 次';
+    elTrajMeta.textContent = trajectory.sample_count + ' 点 · 回跳 ' + m.violations + ' 次 · max回跳 ' + m.max_regression;
     drawTrajectory();
     showToast('录制完成');
   }
 
-  async function copyJson() {
-    const json = JSON.stringify(F.buildExportJson(anchors, getFusionConfig(), {
+  function buildExportPayload() {
+    const extras = {
       startedAt: sessionStartedAt,
       trajectory: trajectory && trajectory.samples.length ? trajectory : undefined,
-    }), null, 2);
+    };
+    const out = F.buildExportJson(profileId, anchors, getFusionConfig(), extras);
+    if (usesGravity) {
+      out.stabilizer = getStabilizerOpts();
+      out.stabilizer.production_gravity_avg_ms = F.getFlipProductionGravityAvgMs();
+    }
+    const otherId = profileId === 'flip' ? 'lift' : 'flip';
+    const other = F.loadCalibration(otherId);
+    if (F.anchorsReadyForProfile(profileId, anchors) && other && F.anchorsReady(other.anchors)) {
+      out.cross_axis = {
+        other_profile: otherId,
+        angle_deg: axisAngleDeg(anchors, other.anchors),
+        other_anchors: other.anchors,
+      };
+    }
+    return out;
+  }
+
+  async function copyJson() {
+    const json = JSON.stringify(buildExportPayload(), null, 2);
     elExportArea.classList.remove('show');
     try {
       await navigator.clipboard.writeText(json);
@@ -273,14 +470,23 @@
 
   function clearAll() {
     if (!anchors.min && !anchors.max && !trajectory) return;
-    if (!confirm('确定清空？')) return;
+    if (!confirm('确定清空本页标定数据？')) return;
     anchors.min = null;
     anchors.max = null;
     trajectory = null;
-    F.clearCalibration();
+    F.clearCalibration(profileId);
     elExportArea.classList.remove('show');
     elTrajMeta.textContent = '尚未录制';
     renderAnchorInfo();
+  }
+
+  function onMotion(event) {
+    if (!active || busy) return;
+    if (usesGravity) {
+      liveFlip = feedFlip(event);
+      if (liveFlip) liveG = liveFlip.g;
+      updatePreview();
+    }
   }
 
   function onOrientation(event) {
@@ -293,20 +499,22 @@
 
   async function start() {
     try {
-      await F.requestOrientationPermission();
+      await F.requestProfilePermissions(profileId);
     } catch (e) {
       showError(e.message);
       return;
     }
     active = true;
     sessionStartedAt = new Date().toISOString();
+    resetFlipPipeline();
+    liveFlip = null;
     elBtnStart.disabled = true;
     elBtnStart.textContent = '传感器运行中';
     setStatus(true, '● 传感器运行中');
     showError('');
-    elOrientationMeta.textContent = '屏幕方向：' + F.getOrientationType();
-    const saved = F.loadCalibration();
-    if (saved && F.anchorsReady(saved.anchors)) {
+    elOrientationMeta.textContent = '屏幕方向：' + F.getOrientationType() + ' · profile: ' + profileId + ' · input: ' + profile.input;
+    const saved = F.loadCalibration(profileId);
+    if (saved && F.anchorsReadyForProfile(profileId, saved.anchors)) {
       anchors.min = saved.anchors.min;
       anchors.max = saved.anchors.max;
       renderAnchorInfo();
@@ -315,6 +523,7 @@
       document.getElementById(id).style.display = '';
     });
     window.addEventListener('deviceorientation', onOrientation, true);
+    window.addEventListener('devicemotion', onMotion, true);
   }
 
   function init() {
@@ -325,6 +534,14 @@
     elRngWBeta.addEventListener('input', () => syncWeights(true));
     elRngWGamma.addEventListener('input', () => syncWeights(false));
     elChkReverse.addEventListener('change', () => { updatePreview(); if (trajectory) drawTrajectory(); });
+    if (elRngGravityAvg) {
+      elRngGravityAvg.addEventListener('input', () => {
+        syncGravityAvgLabel();
+        resetFlipPipeline();
+        updatePreview();
+      });
+      syncGravityAvgLabel();
+    }
     elBtnRecStart.addEventListener('click', startRecording);
     elBtnRecStop.addEventListener('click', stopRecording);
     elBtnCopy.addEventListener('click', copyJson);

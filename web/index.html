@@ -1,113 +1,321 @@
 <!DOCTYPE html>
-<html lang="en">
+
+<html lang="zh-CN">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
 <title>Phone MIDI CC</title>
+
 <style>
+
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
-  body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+
+  body { display: flex; flex-direction: column; align-items: center; padding: 16px 16px 48px; }
+
+
 
   .status { font-size: 11px; padding: 4px 12px; border-radius: 99px; margin-bottom: 16px; }
+
   .status.off { background: #334155; color: #94a3b8; }
+
   .status.on { background: #065f46; color: #6ee7b7; }
+
   .status.wait { background: #713f12; color: #fcd34d; }
 
-  .mode-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
-  .mode-select { padding: 4px 8px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #e2e8f0; font-size: 13px; }
-  .mode-desc { font-size: 12px; color: #64748b; text-align: center; margin-bottom: 20px; min-height: 16px; }
 
-  .pitch-display { text-align: center; margin-bottom: 32px; }
+
+  .section-title { font-size: 13px; color: #64748b; margin-bottom: 10px; width: 100%; max-width: 360px; }
+
+
+
+  .mode-cards { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+
+  .mode-card {
+
+    background: #1e293b; border: 2px solid #334155; border-radius: 14px; padding: 14px 16px;
+
+    cursor: pointer; transition: border-color 0.15s, background 0.15s; text-align: left;
+
+  }
+
+  .mode-card.selected { border-color: #3b82f6; background: #1a2744; }
+
+  .mode-card[data-mode="B"].selected { border-color: #8b5cf6; background: #1f1635; }
+
+  .mode-card[data-mode="C"].selected { border-color: #059669; background: #14241f; }
+
+  .mode-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+
+  .mode-card-title { font-size: 15px; font-weight: 600; }
+
+  .mode-card-badge { font-size: 10px; padding: 2px 8px; border-radius: 99px; }
+
+  .mode-card-badge.ok { background: #065f46; color: #6ee7b7; }
+
+  .mode-card-badge.warn { background: #713f12; color: #fcd34d; }
+
+  .mode-card-badge.na { background: #334155; color: #64748b; }
+
+  .mode-card-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 10px; }
+
+  .mode-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .link-cal {
+
+    font-size: 12px; color: #93c5fd; text-decoration: none; padding: 6px 10px;
+
+    border: 1px solid #334155; border-radius: 8px; background: #0f172a;
+
+  }
+
+  .link-cal:active { background: #1e293b; }
+
+  .mode-card[data-mode="B"] .link-cal { color: #c4b5fd; }
+
+
+
+  .runtime { width: 100%; max-width: 360px; display: none; flex-direction: column; align-items: center; }
+
+  .runtime.show { display: flex; }
+
+  .setup { width: 100%; max-width: 360px; display: flex; flex-direction: column; align-items: center; }
+
+  .setup.hidden { display: none; }
+
+
+
+  .runtime-mode { font-size: 12px; color: #64748b; margin-bottom: 12px; text-align: center; }
+
+  .runtime-mode strong { color: #e2e8f0; }
+
+
+
+  .pitch-display { text-align: center; margin-bottom: 24px; width: 100%; }
+
   .pitch-value { font-size: 72px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+
   .pitch-label { font-size: 13px; color: #64748b; margin-top: 4px; }
 
-  .bar-wrap { width: 100%; max-width: 320px; height: 12px; background: #1e293b; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+
+
+  .bar-wrap { width: 100%; height: 12px; background: #1e293b; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+
   .bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 6px; transition: width 0.05s linear; }
 
-  .cc-row { display: flex; align-items: center; gap: 10px; font-size: 14px; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+
+
+  .cc-row { display: flex; align-items: center; gap: 10px; font-size: 14px; font-family: 'SF Mono', 'Cascadia Code', monospace; flex-wrap: wrap; justify-content: center; }
+
   .cc-tag { background: #1e293b; padding: 2px 8px; border-radius: 4px; color: #a78bfa; }
+
   .cc-val { color: #e2e8f0; font-weight: 600; }
 
-  .btn { margin-top: 16px; padding: 14px 40px; border: none; border-radius: 12px; font-size: 17px; font-weight: 600; cursor: pointer; background: #3b82f6; color: #fff; width: 100%; max-width: 280px; }
+
+
+  .btn { margin-top: 12px; padding: 14px 40px; border: none; border-radius: 12px; font-size: 17px; font-weight: 600; cursor: pointer; background: #3b82f6; color: #fff; width: 100%; max-width: 360px; }
+
   .btn:active { background: #2563eb; }
+
   .btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
-  .btn-secondary { background: transparent; color: #94a3b8; border: 1px solid #334155; margin-top: 10px; }
-  .btn-secondary:active { background: #1e293b; }
-  a.btn { text-decoration: none; text-align: center; line-height: 1.2; box-sizing: border-box; }
-  .btn-actions { width: 100%; max-width: 280px; display: flex; flex-direction: column; align-items: stretch; }
-  .btn.send-on { background: #059669; }
-  .btn.send-off { background: #475569; }
-  .btn-row { display: flex; gap: 12px; margin-top: 24px; }
+
+  .btn.send-on { background: #059669; max-width: 160px; margin-top: 0; }
+
+  .btn.send-off { background: #475569; max-width: 160px; margin-top: 0; }
+
+  .btn-row { display: flex; gap: 12px; margin-top: 20px; justify-content: center; width: 100%; }
+
+
 
   .cfg-row { display: none; align-items: center; gap: 6px; margin-top: 14px; font-size: 13px; flex-wrap: wrap; justify-content: center; }
+
   .cfg-row.show { display: flex; }
+
   .cfg-select { padding: 4px 4px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #e2e8f0; font-size: 12px; max-width: 64px; }
+
   .range-input { width: 54px; padding: 6px 8px; text-align: center; border: 1px solid #334155; border-radius: 8px; background: #1e293b; color: #e2e8f0; font-size: 14px; font-family: 'SF Mono', monospace; }
+
   .range-label { color: #64748b; }
 
-  .brand { position: fixed; bottom: 10px; right: 12px; font-size: 10px; color: #3A3D38; text-align: right; line-height: 1.4; font-family: system-ui, -apple-system, sans-serif; }
 
-  .hint { font-size: 12px; color: #475569; margin-top: 12px; text-align: center; max-width: 280px; }
-  .hint a { color: #64748b; }
-  .cal-badge { font-size: 11px; color: #6ee7b7; margin-top: 4px; }
-  .cal-badge.warn { color: #fcd34d; }
+
+  .brand { position: fixed; bottom: 10px; right: 12px; font-size: 10px; color: #3A3D38; text-align: right; line-height: 1.4; }
+
+  .hint { font-size: 12px; color: #475569; margin-top: 12px; text-align: center; max-width: 360px; line-height: 1.5; }
+
+  .error { color: #f87171; font-size: 13px; text-align: center; margin-top: 10px; max-width: 360px; min-height: 18px; }
+
 </style>
+
 </head>
+
 <body>
+
+
 
 <div class="status off" id="status">● 未连接</div>
 
-<div class="mode-row" id="modeRow" style="display:none">
-  <span class="range-label">模式</span>
-  <select class="mode-select" id="selMode">
-    <option value="A">A — 倾斜推子</option>
-    <option value="B">B — 摇晃弯音</option>
-  </select>
-</div>
-<div class="mode-desc" id="modeDesc"></div>
 
-<div class="pitch-display">
-  <div class="pitch-value" id="pitchDeg">—</div>
-  <div class="pitch-label" id="unitLabel">Pitch (deg)</div>
+
+<div class="setup" id="setupPanel">
+
+  <div class="section-title">选择控制方式</div>
+
+  <div class="mode-cards" id="modeCards">
+
+    <article class="mode-card selected" data-mode="A" tabindex="0">
+
+      <div class="mode-card-head">
+
+        <span class="mode-card-title">A · 抬手推子</span>
+
+        <span class="mode-card-badge warn" data-cal-badge="lift">未校准</span>
+
+      </div>
+
+      <p class="mode-card-desc">自然垂手 ↔ 抬手最高 → CC 0–127</p>
+
+      <div class="mode-card-actions">
+
+        <a class="link-cal" href="/calibrate-lift.html" onclick="event.stopPropagation()">校准抬手范围</a>
+
+      </div>
+
+    </article>
+
+    <article class="mode-card" data-mode="B" tabindex="0">
+
+      <div class="mode-card-head">
+
+        <span class="mode-card-title">B · 翻转推子</span>
+
+        <span class="mode-card-badge warn" data-cal-badge="flip">未校准</span>
+
+      </div>
+
+      <p class="mode-card-desc">固定肘部，翻转手掌 → CC 0–127</p>
+
+      <div class="mode-card-actions">
+
+        <a class="link-cal" href="/calibrate-flip.html" onclick="event.stopPropagation()">校准翻转范围</a>
+
+      </div>
+
+    </article>
+
+    <article class="mode-card" data-mode="C" tabindex="0">
+
+      <div class="mode-card-head">
+
+        <span class="mode-card-title">C · 摇晃弯音</span>
+
+        <span class="mode-card-badge na">无需校准</span>
+
+      </div>
+
+      <p class="mode-card-desc">手持摇晃 → 弯音（Pitch Bend）</p>
+
+    </article>
+
+  </div>
+
+  <button class="btn" id="btnStart" onclick="start()" disabled>启动 · 抬手推子</button>
+
+  <p class="hint" id="hint">选择模式后可启动；A/B 需先完成对应校准</p>
+
 </div>
 
-<div class="bar-wrap">
-  <div class="bar-fill" id="bar" style="width: 50%"></div>
+
+
+<div class="runtime" id="runtimePanel">
+
+  <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
+
+
+
+  <div class="pitch-display">
+
+    <div class="pitch-value" id="pitchDeg">—</div>
+
+    <div class="pitch-label" id="unitLabel">CC</div>
+
+  </div>
+
+
+
+  <div class="bar-wrap">
+
+    <div class="bar-fill" id="bar" style="width: 50%"></div>
+
+  </div>
+
+
+
+  <div class="cc-row">
+
+    <span>映射</span>
+
+    <span class="cc-tag" id="ccTag">CC1 Ch1</span>
+
+    <span>→</span>
+
+    <span class="cc-val" id="ccVal">—</span>
+
+  </div>
+
+
+
+  <div class="cfg-row" id="cfgRow">
+
+    <span class="range-label cc-cfg">CC</span>
+
+    <input class="range-input cc-cfg" id="selCc" type="number" value="1" min="0" max="127" step="1">
+
+    <span class="range-label cc-cfg">Ch</span>
+
+    <select class="cfg-select cc-cfg" id="selCh"></select>
+
+    <input class="range-input range-cfg" id="inMin" type="number" value="0" step="0.01">
+
+    <span class="range-label range-cfg" id="rangeSep">~</span>
+
+    <input class="range-input range-cfg" id="inMax" type="number" value="1" step="0.01">
+
+    <span class="range-label range-cfg" id="rangeUnit"></span>
+
+  </div>
+
+
+
+  <div class="error" id="error"></div>
+
+
+
+  <div class="btn-row" id="btnRow">
+
+    <button class="btn send-on" id="btnSend" onclick="toggleSend()">发送中</button>
+
+  </div>
+
 </div>
 
-<div class="cc-row">
-  <span>映射</span>
-  <span class="cc-tag" id="ccTag">CC11 Ch1</span>
-  <span>→</span>
-  <span class="cc-val" id="ccVal">—</span>
-</div>
 
-<div class="cfg-row" id="cfgRow">
-  <span class="range-label cc-cfg">CC</span>
-  <input class="range-input cc-cfg" id="selCc" type="number" value="1" min="0" max="127" step="1">
-  <span class="range-label cc-cfg">Ch</span>
-  <select class="cfg-select cc-cfg" id="selCh"></select>
-  <input class="range-input range-cfg" id="inMin" type="number" value="0" step="0.01">
-  <span class="range-label range-cfg" id="rangeSep">~</span>
-  <input class="range-input range-cfg" id="inMax" type="number" value="1" step="0.01">
-  <span class="range-label range-cfg" id="rangeUnit"></span>
-</div>
-
-<div class="error" id="error"></div>
-
-<div class="btn-actions">
-  <button class="btn" id="btnStart" onclick="start()" disabled>启动传感器</button>
-  <a class="btn btn-secondary" id="btnCalibrate" href="/calibrate.html">校准设备</a>
-  <div class="cal-badge warn" id="calBadge">尚未校准抬手范围</div>
-</div>
-<div class="btn-row" id="btnRow" style="display:none">
-  <button class="btn send-on" id="btnSend" onclick="toggleSend()">发送中</button>
-</div>
-<div class="hint" id="hint">需要用户点击授权 DeviceOrientation</div>
 
 <div class="brand"><br>Powered by Levi黄</div>
-<script src="fusion.js?v=3"></script>
-<script src="app.js?v=4"></script>
+
+
+
+<script src="fusion.js?v=9"></script>
+
+<script src="app.js?v=8"></script>
+
 </body>
+
 </html>
+
+

@@ -72,13 +72,13 @@
   .meta { font-size: 11px; color: #475569; margin-top: 6px; }
 </style>
 </head>
-<body>
+<body data-profile="lift">
 
-<nav class="nav"><a href="/">← 返回主控制页</a></nav>
+<nav class="nav"><a href="/">← 主控制页</a> · <a href="/fusion-calibrate-flip.html">Mode B 调试</a></nav>
 
 <div class="header">
-  <h1>Mode A 融合标定</h1>
-  <p>开发者调试页：参数、轨迹、JSON 导出。普通用户请用 <a href="/calibrate.html" style="color:#64748b">校准设备</a>。</p>
+  <h1 id="pageTitle">Mode A 融合标定</h1>
+  <p>开发者调试页：参数、轨迹、JSON 导出。普通用户请用 <a href="/calibrate-lift.html" style="color:#64748b">校准抬手 (A)</a> 或 <a href="/calibrate-flip.html" style="color:#64748b">校准翻转 (B)</a>。</p>
 </div>
 
 <div class="status off" id="status">● 传感器未启动</div>
@@ -93,6 +93,7 @@
   <div class="anchor-info" id="anchorMinInfo">MIN: 未标定</div>
   <div class="anchor-info" id="anchorMaxInfo">MAX: 未标定</div>
   <div class="warn" id="anchorWarn" style="display:none"></div>
+  <div class="meta" id="crossAxis" style="display:none"></div>
 </div>
 
 <div class="panel disabled" id="previewPanel" style="display:none">
@@ -140,7 +141,7 @@
 
 <div class="panel disabled" id="trajPanel" style="display:none">
   <div class="panel-title">轨迹录制</div>
-  <p class="hint">缓慢从垂手抬至最高，用于检查融合值是否单调。</p>
+  <p class="hint" id="trajHint">缓慢从垂手抬至最高，用于检查融合值是否单调。</p>
   <div class="btn-row" style="margin-top:0">
     <button class="btn btn-accent" id="btnRecStart" type="button">开始录制</button>
     <button class="btn btn-secondary" id="btnRecStop" type="button" disabled>停止</button>
@@ -168,7 +169,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="fusion.js?v=2"></script>
-<script src="fusion-calibrate.js"></script>
+<script src="fusion.js?v=9"></script>
+<script src="fusion-calibrate.js?v=5"></script>
 </body>
 </html>

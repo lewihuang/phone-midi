@@ -146,9 +146,10 @@ class MappingEngine:
 
     def process(self, sensor: str, axis: str, value: float) -> list[tuple[int, int, int]]:
         outputs = []
+        fused_phone = axis in ("fused_lift", "fused_flip")
         for i, m in enumerate(self.mappings):
             if m["source"]["sensor"] != sensor or m["source"]["axis"] != axis: continue
-            smoothed = self._smoothers[i].smooth(value)
+            smoothed = value if fused_phone else self._smoothers[i].smooth(value)
             cc_val = self._apply_mapping(smoothed, m)
             key = (m["target"]["cc"], m["target"]["channel"])
             prev = self._last_cc.get(key)
@@ -158,7 +159,10 @@ class MappingEngine:
 
     def _apply_mapping(self, value: float, m: dict) -> int:
         r = m.get("range", {}); in_min = r.get("in_min", -90); in_max = r.get("in_max", 90)
-        out_min = r.get("out_min", 0); out_max = r.get("out_max", 127); dz = r.get("dead_zone", 0.0)
+        out_min = r.get("out_min", 0); out_max = r.get("out_max", 127)
+        axis = m.get("source", {}).get("axis", "")
+        fused_phone = axis in ("fused_lift", "fused_flip")
+        dz = 0.0 if fused_phone else r.get("dead_zone", 0.0)
         center = (in_min + in_max) / 2; half = (in_max - in_min) * dz / 2
         if abs(value - center) <= half: value = center
         value = max(in_min, min(in_max, value))
