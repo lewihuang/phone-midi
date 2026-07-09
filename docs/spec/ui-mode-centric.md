@@ -27,14 +27,12 @@
 
 ---
 
-## 3. 主页结构（mode cards）
+## 3. 主页结构（下拉选择）
 
 ```
 ┌ 状态：未连接 ─────────────────────┐
-├ 选择控制方式 ─────────────────────┤
-│ [A 抬手推子]  说明 + ●已校准/○未校准 + [校准] │
-│ [B 翻转推子]  说明 + 状态 + [校准]           │
-│ [C 摇晃弯音]  说明（无需校准）               │
+│ 控制方式  [▼ A · 抬手推子      ]   │
+│ 说明文案 + ●已校准/○未校准 [校准]  │  ← A/B 显示校准行；C 隐藏
 ├ [ 启动 · {当前 Mode 名} ] ─────────┤
 ├ ── 运行中显示 ──                  │
 │ 大数字 / 条 / CC 映射 / [发送中]   │
@@ -43,11 +41,11 @@
 
 ### 交互
 
-- 点击卡片 **选中** Mode（高亮边框）；A/B/C 互斥  
-- 「校准 xxx」链到 `/calibrate-lift.html` 或 `/calibrate-flip.html`  
-- 启动：A/B 未校准时仍可启动但 toast 警告；或 disabled（初版：**警告 + 允许启动**）  
-- 运行中：顶栏显示当前 Mode；隐藏模式卡片区（或折叠）  
-- URL：`/?mode=B` 深链；校准完成返回 `/?mode=B`  
+- **下拉** 选择 Mode（A/B/C 互斥）
+- 选中后显示 **说明** + **校准状态/链接**（仅 A/B）
+- 「去校准」链到 `/calibrate-lift.html` 或 `/calibrate-flip.html`
+- 启动：A/B 未校准时仍可启动但警告
+- URL：`/?mode=B` 深链  
 
 ---
 
@@ -67,8 +65,8 @@
 
 | 文件 | 变更 |
 |------|------|
-| `web/index.html` | 模式卡片 UI |
-| `web/app.js` | Mode B、按 profile 读校准、卡片选择 |
+| `web/index.html` | 模式下拉 + 校准行 |
+| `web/app.js` | `selectMode` / `refreshModeSetup` |
 | `web/fusion.js` | PROFILES lift/flip |
 | `web/calibrate-wizard.js` | 新建，替代 calibrate.js |
 | `web/calibrate-lift.html` | 新建 |

@@ -20,7 +20,11 @@
 
   const elRuntimePanel = document.getElementById('runtimePanel');
 
-  const elModeCards = document.getElementById('modeCards');
+  const elModeSelect = document.getElementById('modeSelect');
+  const elModeDesc = document.getElementById('modeDesc');
+  const elCalRow = document.getElementById('calRow');
+  const elCalBadge = document.getElementById('calBadge');
+  const elCalLink = document.getElementById('calLink');
 
   const elRuntimeModeName = document.getElementById('runtimeModeName');
 
@@ -74,7 +78,9 @@
 
       label: 'Lift',
 
-      desc: '自然垂手 ↔ 抬最高 → CC',
+      desc: '自然垂手 ↔ 抬手最高 → CC 0–127',
+      calibrateHref: '/calibrate-lift.html',
+      calibrateLabel: '校准抬手范围',
 
       inputMin: 0,
 
@@ -102,7 +108,9 @@
 
       label: 'Flip',
 
-      desc: '固定肘部，翻转手掌 → CC',
+      desc: '固定肘部，翻转手掌 → CC 0–127',
+      calibrateHref: '/calibrate-flip.html',
+      calibrateLabel: '校准翻转范围',
 
       inputMin: 0,
 
@@ -128,7 +136,7 @@
 
       label: 'Shake',
 
-      desc: '摇晃 → 弯音',
+      desc: '手持摇晃 → 弯音（Pitch Bend）；可在下方调整输入范围',
 
       inputMin: -40,
 
@@ -198,50 +206,45 @@
 
 
 
-  function refreshModeCards() {
-
-    if (!F || !elModeCards) return;
-
+  function refreshModeSetup() {
+    if (!F) return;
     F.migrateLegacyCalibration();
-
-    ['lift', 'flip'].forEach((profileId) => {
-
-      const badge = elModeCards.querySelector('[data-cal-badge="' + profileId + '"]');
-
-      if (!badge) return;
-
-      if (F.consumeJustSavedFlag(profileId)) { /* refresh after cal */ }
-
-      const ok = F.hasCalibration(profileId);
-
-      badge.textContent = ok ? '已校准' : '未校准';
-
-      badge.className = 'mode-card-badge ' + (ok ? 'ok' : 'warn');
-
-    });
-
+    const m = MODES[selectedMode];
+    if (m && m.needsCal && m.profile) {
+      F.consumeJustSavedFlag(m.profile);
+    }
+    applyModeSetupUi(selectedMode);
     updateStartButtonLabel();
-
   }
 
-
+  function applyModeSetupUi(modeId) {
+    const m = MODES[modeId];
+    if (!m) return;
+    if (elModeSelect) elModeSelect.value = modeId;
+    if (elModeDesc) elModeDesc.textContent = m.desc;
+    if (!elCalRow) return;
+    if (m.needsCal && m.calibrateHref) {
+      elCalRow.classList.remove('hidden');
+      if (elCalLink) {
+        elCalLink.href = m.calibrateHref;
+        elCalLink.textContent = m.calibrateLabel || '去校准';
+      }
+      const ok = F && F.hasCalibration(m.profile);
+      if (elCalBadge) {
+        elCalBadge.textContent = ok ? '已校准' : '未校准';
+        elCalBadge.className = 'cal-badge ' + (ok ? 'ok' : 'warn');
+      }
+    } else {
+      elCalRow.classList.add('hidden');
+    }
+  }
 
   function selectMode(modeId) {
-
     if (!MODES[modeId]) return;
-
     selectedMode = modeId;
-
-    elModeCards.querySelectorAll('.mode-card').forEach((card) => {
-
-      card.classList.toggle('selected', card.dataset.mode === modeId);
-
-    });
-
+    applyModeSetupUi(modeId);
     updateStartButtonLabel();
-
     history.replaceState(null, '', '/?mode=' + modeId);
-
   }
 
 
@@ -258,9 +261,13 @@
 
       elHint.textContent = m.name + ' 尚未校准，可先校准或启动后仅预览（不发送有效 CC）';
 
+    } else if (m.needsCal) {
+
+      elHint.textContent = '点击启动传感器；请先完成上方校准';
+
     } else {
 
-      elHint.textContent = '点击启动传感器；A/B 使用前请先完成对应校准';
+      elHint.textContent = '点击启动传感器';
 
     }
 
@@ -866,30 +873,78 @@
 
 
 
-  function initModeCards() {
+  function returnToSetup() {
 
-    elModeCards.querySelectorAll('.mode-card').forEach((card) => {
+    if (!active) return;
 
-      card.addEventListener('click', () => selectMode(card.dataset.mode));
+    active = false;
 
-      card.addEventListener('keydown', (e) => {
+    sending = true;
 
-        if (e.key === 'Enter' || e.key === ' ') {
 
-          e.preventDefault();
 
-          selectMode(card.dataset.mode);
+    window.removeEventListener('deviceorientation', onOrientationRoute, true);
 
-        }
+    window.removeEventListener('devicemotion', onMotionRoute, true);
 
-      });
 
-    });
 
+    if (ws) {
+
+      ws.onclose = null;
+
+      ws.close();
+
+      ws = null;
+
+    }
+
+
+
+    elSetupPanel.classList.remove('hidden');
+
+    elRuntimePanel.classList.remove('show');
+
+    elCfgRow.classList.remove('show');
+
+
+
+    showError('');
+
+    setStatus('off', '未连接');
+
+    elPitchDeg.textContent = '—';
+
+    elCcVal.textContent = '—';
+
+    elBar.style.width = '50%';
+
+
+
+    F.resetFlipMotion();
+
+    lastSentVal = null;
+
+    lastSentCc = null;
+
+    lastSendTime = 0;
+
+    calibration = null;
+
+
+
+    refreshModeSetup();
+
+  }
+
+
+
+  function initModeSelect() {
+    if (elModeSelect) {
+      elModeSelect.addEventListener('change', () => selectMode(elModeSelect.value));
+    }
     const urlMode = getModeFromUrl();
-
     selectMode(urlMode || 'A');
-
   }
 
 
@@ -910,9 +965,9 @@
 
     elBtn.disabled = false;
 
-    initModeCards();
+    initModeSelect();
 
-    refreshModeCards();
+    refreshModeSetup();
 
     elSelCc.addEventListener('change', onCcChange);
 
@@ -928,11 +983,13 @@
 
   window.start = start;
 
+  window.returnToSetup = returnToSetup;
+
   document.addEventListener('visibilitychange', () => {
 
     if (document.hidden) lastSentVal = null;
 
-    else if (!active) refreshModeCards();
+    else if (!active) refreshModeSetup();
 
   });
 
@@ -946,11 +1003,11 @@
 
     }
 
-    if (!active) refreshModeCards();
+    if (!active) refreshModeSetup();
 
   });
 
-  window.addEventListener('focus', () => { if (!active) refreshModeCards(); });
+  window.addEventListener('focus', () => { if (!active) refreshModeSetup(); });
 
   init();
 

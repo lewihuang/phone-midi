@@ -30,53 +30,63 @@
 
 
 
-  .section-title { font-size: 13px; color: #64748b; margin-bottom: 10px; width: 100%; max-width: 360px; }
+  .setup-header { width: 100%; max-width: 360px; margin-bottom: 20px; text-align: center; }
 
+  .setup-title { font-size: 22px; font-weight: 700; color: #e2e8f0; margin-bottom: 8px; letter-spacing: 0.02em; }
 
+  .setup-intro { font-size: 13px; color: #94a3b8; line-height: 1.65; text-align: left; }
 
-  .mode-cards { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+  .setup-intro ol { margin: 10px 0 0 1.2em; padding: 0; }
 
-  .mode-card {
+  .setup-intro li { margin-bottom: 6px; }
 
-    background: #1e293b; border: 2px solid #334155; border-radius: 14px; padding: 14px 16px;
+  .setup-intro li:last-child { margin-bottom: 0; }
 
-    cursor: pointer; transition: border-color 0.15s, background 0.15s; text-align: left;
+  .mode-label { display: block; font-size: 13px; color: #64748b; margin-bottom: 8px; }
+
+  .mode-select {
+
+    width: 100%; padding: 12px 14px; border: 1px solid #334155; border-radius: 12px;
+
+    background: #1e293b; color: #e2e8f0; font-size: 15px; font-weight: 600;
+
+    appearance: none;
+
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2394a3b8'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+
+    background-repeat: no-repeat; background-position: right 14px center;
 
   }
 
-  .mode-card.selected { border-color: #3b82f6; background: #1a2744; }
+  .mode-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; margin-top: 10px; }
 
-  .mode-card[data-mode="B"].selected { border-color: #8b5cf6; background: #1f1635; }
+  .cal-row {
 
-  .mode-card[data-mode="C"].selected { border-color: #059669; background: #14241f; }
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 
-  .mode-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    margin-top: 12px; padding: 10px 12px; background: #1e293b;
 
-  .mode-card-title { font-size: 15px; font-weight: 600; }
+    border: 1px solid #334155; border-radius: 10px;
 
-  .mode-card-badge { font-size: 10px; padding: 2px 8px; border-radius: 99px; }
+  }
 
-  .mode-card-badge.ok { background: #065f46; color: #6ee7b7; }
+  .cal-row.hidden { display: none; }
 
-  .mode-card-badge.warn { background: #713f12; color: #fcd34d; }
+  .cal-badge { font-size: 11px; padding: 3px 10px; border-radius: 99px; }
 
-  .mode-card-badge.na { background: #334155; color: #64748b; }
+  .cal-badge.ok { background: #065f46; color: #6ee7b7; }
 
-  .mode-card-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 10px; }
-
-  .mode-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .cal-badge.warn { background: #713f12; color: #fcd34d; }
 
   .link-cal {
 
-    font-size: 12px; color: #93c5fd; text-decoration: none; padding: 6px 10px;
+    font-size: 12px; color: #93c5fd; text-decoration: none; padding: 6px 12px;
 
-    border: 1px solid #334155; border-radius: 8px; background: #0f172a;
+    border: 1px solid #334155; border-radius: 8px; background: #0f172a; margin-left: auto;
 
   }
 
-  .link-cal:active { background: #1e293b; }
-
-  .mode-card[data-mode="B"] .link-cal { color: #c4b5fd; }
+  .link-cal:active { background: #334155; }
 
 
 
@@ -90,7 +100,21 @@
 
 
 
-  .runtime-mode { font-size: 12px; color: #64748b; margin-bottom: 12px; text-align: center; }
+  .runtime-head { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+
+  .btn-back {
+
+    padding: 8px 12px; border: 1px solid #334155; border-radius: 8px;
+
+    background: #1e293b; color: #94a3b8; font-size: 13px; font-weight: 600;
+
+    cursor: pointer; flex-shrink: 0;
+
+  }
+
+  .btn-back:active { background: #334155; color: #e2e8f0; }
+
+  .runtime-mode { font-size: 12px; color: #64748b; text-align: right; flex: 1; }
 
   .runtime-mode strong { color: #e2e8f0; }
 
@@ -124,9 +148,9 @@
 
   .btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
 
-  .btn.send-on { background: #059669; max-width: 160px; margin-top: 0; }
+  .btn.send-on { background: #059669; max-width: 160px; margin-top: 0; flex: 1; }
 
-  .btn.send-off { background: #475569; max-width: 160px; margin-top: 0; }
+  .btn.send-off { background: #475569; max-width: 160px; margin-top: 0; flex: 1; }
 
   .btn-row { display: flex; gap: 12px; margin-top: 20px; justify-content: center; width: 100%; }
 
@@ -164,63 +188,51 @@
 
 <div class="setup" id="setupPanel">
 
-  <div class="section-title">选择控制方式</div>
+  <header class="setup-header">
 
-  <div class="mode-cards" id="modeCards">
+    <h1 class="setup-title">手机 MIDI 推子</h1>
 
-    <article class="mode-card selected" data-mode="A" tabindex="0">
+    <div class="setup-intro">
 
-      <div class="mode-card-head">
+      <p>用手机传感器向电脑上的 DAW 发送 MIDI 控制信号。请先确保电脑已运行 Bridge，手机与电脑在同一局域网。</p>
 
-        <span class="mode-card-title">A · 抬手推子</span>
+      <ol>
 
-        <span class="mode-card-badge warn" data-cal-badge="lift">未校准</span>
+        <li>选择下方控制方式（抬手 / 翻转 / 摇晃弯音）</li>
 
-      </div>
+        <li>模式 A、B 需先完成校准，再点击启动</li>
 
-      <p class="mode-card-desc">自然垂手 ↔ 抬手最高 → CC 0–127</p>
+        <li>启动后倾斜或晃动手机，观察数值与 DAW 中的 MIDI 响应</li>
 
-      <div class="mode-card-actions">
+      </ol>
 
-        <a class="link-cal" href="/calibrate-lift.html" onclick="event.stopPropagation()">校准抬手范围</a>
+    </div>
 
-      </div>
+  </header>
 
-    </article>
+  <div class="mode-setup" id="modeSetup">
 
-    <article class="mode-card" data-mode="B" tabindex="0">
+    <label class="mode-label" for="modeSelect">控制方式</label>
 
-      <div class="mode-card-head">
+    <select class="mode-select" id="modeSelect" aria-label="选择控制方式">
 
-        <span class="mode-card-title">B · 翻转推子</span>
+      <option value="A">A · 抬手推子</option>
 
-        <span class="mode-card-badge warn" data-cal-badge="flip">未校准</span>
+      <option value="B">B · 翻转推子</option>
 
-      </div>
+      <option value="C">C · 摇晃弯音</option>
 
-      <p class="mode-card-desc">固定肘部，翻转手掌 → CC 0–127</p>
+    </select>
 
-      <div class="mode-card-actions">
+    <p class="mode-desc" id="modeDesc"></p>
 
-        <a class="link-cal" href="/calibrate-flip.html" onclick="event.stopPropagation()">校准翻转范围</a>
+    <div class="cal-row" id="calRow">
 
-      </div>
+      <span class="cal-badge warn" id="calBadge">未校准</span>
 
-    </article>
+      <a class="link-cal" id="calLink" href="/calibrate-lift.html">去校准</a>
 
-    <article class="mode-card" data-mode="C" tabindex="0">
-
-      <div class="mode-card-head">
-
-        <span class="mode-card-title">C · 摇晃弯音</span>
-
-        <span class="mode-card-badge na">无需校准</span>
-
-      </div>
-
-      <p class="mode-card-desc">手持摇晃 → 弯音（Pitch Bend）</p>
-
-    </article>
+    </div>
 
   </div>
 
@@ -234,7 +246,13 @@
 
 <div class="runtime" id="runtimePanel">
 
-  <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
+  <div class="runtime-head">
+
+    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">← 返回</button>
+
+    <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
+
+  </div>
 
 
 
@@ -310,9 +328,9 @@
 
 
 
-<script src="fusion.js?v=9"></script>
+<script src="fusion.js?v=11"></script>
 
-<script src="app.js?v=8"></script>
+<script src="app.js?v=10"></script>
 
 </body>
 

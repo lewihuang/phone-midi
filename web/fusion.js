@@ -4,7 +4,9 @@
 
   const LEGACY_STORAGE_KEY = 'phone-midi/calibration/v1';
   const CAPTURE_MS = 400;
+  const SHAKE_PEAK_MS = 5000;
   const MIN_SEP = 4;
+  const MIN_SHAKE_SEP = 3;
 
   /** Flip runtime stabilizer: A sliding avg (ms) + C One Euro on t */
   const FLIP_STABILIZER = {
@@ -43,6 +45,17 @@
       maxLabel: '翻转极限',
       previewLabel: '翻转预览 · CC 0 – 127',
     },
+    shake: {
+      id: 'shake',
+      modeId: 'C',
+      input: 'motion',
+      storageKey: 'phone-midi/calibration/shake/v1',
+      exportSchema: 'phone-midi/fusion-calibrate/shake/v1',
+      axis: 'fused_shake',
+      minLabel: '负向满弯音',
+      maxLabel: '正向满弯音',
+      previewLabel: '摇晃预览 · ±100%',
+    },
   };
 
   const STORAGE_KEY = PROFILES.lift.storageKey;
@@ -67,6 +80,7 @@
   function profileFromModeId(modeId) {
     if (modeId === 'B') return PROFILES.flip;
     if (modeId === 'A') return PROFILES.lift;
+    if (modeId === 'C') return PROFILES.shake;
     return null;
   }
 
@@ -128,8 +142,25 @@
     return anchors && isValidGravityAnchor(anchors.min) && isValidGravityAnchor(anchors.max);
   }
 
+  function isValidRest(rest) {
+    return rest != null && typeof rest.x === 'number' && !Number.isNaN(rest.x)
+      && typeof rest.y === 'number' && !Number.isNaN(rest.y)
+      && typeof rest.z === 'number' && !Number.isNaN(rest.z);
+  }
+
+  function isValidShakePeak(p) {
+    return p != null && typeof p.peak === 'number' && !Number.isNaN(p.peak);
+  }
+
+  function shakeAnchorsReady(anchors) {
+    return anchors && isValidShakePeak(anchors.min) && isValidShakePeak(anchors.max)
+      && anchors.max.peak - anchors.min.peak >= MIN_SHAKE_SEP;
+  }
+
   function anchorsReadyForProfile(profileId, anchors) {
-    if (profileInput(profileId) === 'gravity') return gravityAnchorsReady(anchors);
+    const input = profileInput(profileId);
+    if (input === 'gravity') return gravityAnchorsReady(anchors);
+    if (input === 'motion') return shakeAnchorsReady(anchors);
     return anchorsReady(anchors);
   }
 
@@ -137,6 +168,7 @@
     if (!data || !data.anchors) return false;
     const input = data.input || profileInput(profileId);
     if (input === 'gravity') return gravityAnchorsReady(data.anchors);
+    if (input === 'motion') return shakeAnchorsReady(data.anchors);
     return anchorsReady(data.anchors);
   }
 
@@ -155,8 +187,15 @@
     return Math.acos(clamp(dot, -1, 1)) * 180 / Math.PI;
   }
 
+  function shakePeakSpan(anchors) {
+    if (!anchors || !isValidShakePeak(anchors.min) || !isValidShakePeak(anchors.max)) return 0;
+    return anchors.max.peak - anchors.min.peak;
+  }
+
   function anchorSeparationForProfile(profileId, anchors) {
-    if (profileInput(profileId) === 'gravity') return gravityAnchorSeparation(anchors);
+    const input = profileInput(profileId);
+    if (input === 'gravity') return gravityAnchorSeparation(anchors);
+    if (input === 'motion') return shakePeakSpan(anchors);
     return anchorSeparation(anchors);
   }
 
@@ -231,6 +270,155 @@
     return Math.round(clamp(t, 0, 1) * 127);
   }
 
+  function shakeSignedToPercent(signed) {
+    if (signed == null) return null;
+    return Math.round(clamp(signed, -1, 1) * 100);
+  }
+
+  function shakeTToPitchBend(t) {
+    if (t == null) return null;
+    const signed = 2 * clamp(t, 0, 1) - 1;
+    return Math.round(8192 + signed * 8192);
+  }
+
+  function extractMotionDelta(event, rest) {
+    const linear = event.acceleration;
+    if (linear && linear.x != null) {
+      return {
+        x: linear.x - (rest ? rest.x : 0),
+        y: linear.y - (rest ? rest.y : 0),
+        z: linear.z - (rest ? rest.z : 0),
+        source: 'acceleration',
+      };
+    }
+    const acc = event.accelerationIncludingGravity;
+    if (!acc || acc.x == null) return null;
+    return {
+      x: acc.x - (rest ? rest.x : 0),
+      y: acc.y - (rest ? rest.y : 0),
+      z: acc.z - (rest ? rest.z : 0),
+      source: 'gravity_delta',
+    };
+  }
+
+  function projectShakeAxis(sample, axis) {
+    if (!sample) return null;
+    if (axis === 'x') return sample.x;
+    if (axis === 'y') return sample.y;
+    return Math.abs(sample.x) >= Math.abs(sample.y) ? sample.x : sample.y;
+  }
+
+  function resolveShakeAxis(anchors, opts) {
+    if (opts && (opts.primaryAxis === 'x' || opts.primaryAxis === 'y')) return opts.primaryAxis;
+    if (anchors && (anchors.primaryAxis === 'x' || anchors.primaryAxis === 'y')) {
+      return anchors.primaryAxis;
+    }
+    return 'auto';
+  }
+
+  /**
+   * Map shake motion to t∈[0,1] (0.5=center), signed∈[-1,1], pb 0..16383.
+   */
+  function computeShakeMotion(event, anchors, opts) {
+    if (!shakeAnchorsReady(anchors)) return null;
+    const sample = extractMotionDelta(event, null);
+    if (!sample) return null;
+    const axis = resolveShakeAxis(anchors, opts);
+    const raw = projectShakeAxis(sample, axis);
+    if (raw == null) return null;
+    const peakMin = anchors.min.peak;
+    const peakMax = anchors.max.peak;
+    const span = peakMax - peakMin;
+    if (span < 1e-6) return null;
+    const center = (peakMin + peakMax) / 2;
+    const dz = (opts && typeof opts.centerDeadband === 'number') ? opts.centerDeadband : 0.02;
+    let t = (raw - peakMin) / span;
+    if (Math.abs(raw - center) <= span * dz / 2) t = 0.5;
+    t = clamp(t, 0, 1);
+    const signed = 2 * t - 1;
+    return {
+      t,
+      signed,
+      raw,
+      pb: shakeTToPitchBend(t),
+      axis,
+      source: sample.source,
+    };
+  }
+
+  /**
+   * One-window bidirectional peak capture. Zero reference = absolute still (linear accel ≈ 0).
+   */
+  function captureShakePeaksBoth(windowMs, onTick) {
+    const duration = typeof windowMs === 'number' ? windowMs : SHAKE_PEAK_MS;
+    return new Promise((resolve, reject) => {
+      const started = performance.now();
+      let peakMin = Infinity;
+      let peakMax = -Infinity;
+      let sampleCount = 0;
+      let axisVoteX = 0;
+      let axisVoteY = 0;
+      let source = null;
+      const handler = (e) => {
+        const sample = extractMotionDelta(e, null);
+        if (!sample) return;
+        sampleCount++;
+        if (!source) source = sample.source;
+        const absX = Math.abs(sample.x);
+        const absY = Math.abs(sample.y);
+        if (absX >= absY) axisVoteX++;
+        else axisVoteY++;
+        const raw = absX >= absY ? sample.x : sample.y;
+        peakMin = Math.min(peakMin, raw);
+        peakMax = Math.max(peakMax, raw);
+        if (onTick) {
+          onTick({
+            peakMin,
+            peakMax,
+            raw,
+            span: peakMax - peakMin,
+            elapsed: performance.now() - started,
+            sampleCount,
+          });
+        }
+      };
+      global.addEventListener('devicemotion', handler, true);
+      setTimeout(() => {
+        global.removeEventListener('devicemotion', handler, true);
+        if (sampleCount === 0) {
+          reject(new Error('未收到晃动数据，请重试'));
+          return;
+        }
+        if (!Number.isFinite(peakMin) || !Number.isFinite(peakMax)) {
+          reject(new Error('峰值采样失败'));
+          return;
+        }
+        const span = peakMax - peakMin;
+        if (span < MIN_SHAKE_SEP) {
+          reject(new Error('峰值跨度过小（' + span.toFixed(2) + ' m/s²），请向两侧加大晃动力度'));
+          return;
+        }
+        const capturedAt = new Date().toISOString();
+        resolve({
+          min: {
+            peak: Math.round(peakMin * 1000) / 1000,
+            capturedAt,
+            sampleCount,
+          },
+          max: {
+            peak: Math.round(peakMax * 1000) / 1000,
+            capturedAt,
+            sampleCount,
+          },
+          primaryAxis: axisVoteX >= axisVoteY ? 'x' : 'y',
+          source,
+          windowMs: duration,
+          peak_span: Math.round(span * 1000) / 1000,
+        });
+      }, duration);
+    });
+  }
+
   function loadCalibration(profile) {
     migrateLegacyCalibration();
     const p = resolveProfile(profile);
@@ -273,14 +461,20 @@
       schema: p.storageKey,
       profile: p.id,
       input: p.input,
-      anchors: {
-        min: { ...anchors.min },
-        max: { ...anchors.max },
-      },
+      anchors: {},
       fusion: fusion || DEFAULT_FUSION,
       orientation: getOrientationType(),
       calibratedAt: new Date().toISOString(),
     };
+    if (p.input === 'motion') {
+      data.zero_reference = 'absolute_still';
+      data.anchors.min = { ...anchors.min };
+      data.anchors.max = { ...anchors.max };
+      if (anchors.primaryAxis) data.anchors.primaryAxis = anchors.primaryAxis;
+    } else {
+      data.anchors.min = { ...anchors.min };
+      data.anchors.max = { ...anchors.max };
+    }
     const json = JSON.stringify(data);
     try {
       persistCalibrationJson(profileId, json);
@@ -406,8 +600,13 @@
   }
 
   async function requestProfilePermissions(profileId) {
+    const input = profileInput(profileId);
+    if (input === 'motion') {
+      await requestMotionPermission();
+      return;
+    }
     await requestOrientationPermission();
-    if (profileInput(profileId) === 'gravity') {
+    if (input === 'gravity') {
       await requestMotionPermission();
     }
   }
@@ -561,6 +760,7 @@
   function buildExportJson(profile, anchors, fusion, extras) {
     const p = resolveProfile(profile);
     const isGravity = p.input === 'gravity';
+    const isMotion = p.input === 'motion';
     const out = {
       schema: p.exportSchema,
       profile: p.id,
@@ -570,28 +770,54 @@
         orientation: getOrientationType(),
         startedAt: (extras && extras.startedAt) || new Date().toISOString(),
       },
-      endpoint_semantics: {
-        min_pose: p.minLabel,
-        min_cc: 0,
-        max_pose: p.maxLabel,
-        max_cc: 127,
-      },
+      endpoint_semantics: isMotion
+        ? {
+          zero_reference: 'absolute_still (linear acceleration ≈ 0)',
+          min_pose: p.minLabel,
+          min_bend: '-100%',
+          max_pose: p.maxLabel,
+          max_bend: '+100%',
+        }
+        : {
+          min_pose: p.minLabel,
+          min_cc: 0,
+          max_pose: p.maxLabel,
+          max_cc: 127,
+        },
       anchors: {},
       fusion: fusion || DEFAULT_FUSION,
-      recommended_mapping: {
-        sensor: isGravity ? 'accelerometer' : 'rotation_vector',
-        axis: p.axis,
-        value_range: [0.0, 1.0],
-        notes: isGravity
-          ? 'Phone computes fused t from gravity vector; Bridge in_min=0, in_max=1 → CC 0-127'
-          : 'Phone computes fused t; Bridge in_min=0, in_max=1 → CC 0-127',
-      },
+      recommended_mapping: isMotion
+        ? {
+          sensor: 'accelerometer',
+          axis: p.axis,
+          value_range: [0.0, 1.0],
+          notes: 'Phone computes fused t from shake peaks; Bridge maps t→Pitch Bend (0.5=center)',
+        }
+        : {
+          sensor: isGravity ? 'accelerometer' : 'rotation_vector',
+          axis: p.axis,
+          value_range: [0.0, 1.0],
+          notes: isGravity
+            ? 'Phone computes fused t from gravity vector; Bridge in_min=0, in_max=1 → CC 0-127'
+            : 'Phone computes fused t; Bridge in_min=0, in_max=1 → CC 0-127',
+        },
     };
-    if (anchors.min) out.anchors.min = { ...anchors.min };
-    if (anchors.max) out.anchors.max = { ...anchors.max };
-    if (anchorsReadyForProfile(p.id, anchors)) {
-      out.anchor_separation_deg = Math.round(anchorSeparationForProfile(p.id, anchors) * 10) / 10;
+    if (isMotion) {
+      out.zero_reference = 'absolute_still';
+      if (anchors.min) out.anchors.min = { ...anchors.min };
+      if (anchors.max) out.anchors.max = { ...anchors.max };
+      if (anchors.primaryAxis) out.anchors.primaryAxis = anchors.primaryAxis;
+    } else {
+      if (anchors.min) out.anchors.min = { ...anchors.min };
+      if (anchors.max) out.anchors.max = { ...anchors.max };
     }
+    if (anchorsReadyForProfile(p.id, anchors)) {
+      const sep = anchorSeparationForProfile(p.id, anchors);
+      out.anchor_separation = isMotion
+        ? { peak_span: Math.round(sep * 1000) / 1000, unit: 'm/s²' }
+        : { angle_deg: Math.round(sep * 10) / 10 };
+    }
+    if (extras && extras.shake_opts) out.shake_opts = extras.shake_opts;
     if (extras && extras.trajectory) out.trajectory = extras.trajectory;
     return out;
   }
@@ -602,7 +828,9 @@
     EXPORT_SCHEMA,
     PROFILES,
     CAPTURE_MS,
+    SHAKE_PEAK_MS,
     MIN_SEP,
+    MIN_SHAKE_SEP,
     DEFAULT_FUSION,
     clamp,
     normalize3,
@@ -612,6 +840,8 @@
     profileFromModeId,
     anchorsReady,
     gravityAnchorsReady,
+    shakeAnchorsReady,
+    shakePeakSpan,
     anchorsReadyForProfile,
     anchorSeparation,
     gravityAnchorSeparation,
@@ -620,6 +850,12 @@
     computeGravityFusedT,
     computeFusedTForProfile,
     fusedToCc,
+    shakeSignedToPercent,
+    shakeTToPitchBend,
+    extractMotionDelta,
+    projectShakeAxis,
+    computeShakeMotion,
+    captureShakePeaksBoth,
     loadCalibration,
     saveCalibration,
     clearCalibration,

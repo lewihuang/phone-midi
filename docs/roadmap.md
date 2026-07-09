@@ -17,7 +17,7 @@
 | `/calibrate-lift.html` | Mode A 校准 |
 | `/calibrate-flip.html` | Mode B 校准 |
 | Mode B | `fused_flip` ∈ [0,1] |
-| Mode C | 原摇晃弯音（原 Mode B） |
+| Mode C | 原摇晃弯音（原 Mode B）→ [mode-c-shake.md](spec/mode-c-shake.md) 峰值标定 |
 
 ---
 

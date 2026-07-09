@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Mode C 摇晃标定 — Phone MIDI CC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 16px 16px 48px; }
+
+  .nav { width: 100%; max-width: 420px; margin-bottom: 12px; font-size: 12px; }
+  .nav a { color: #64748b; text-decoration: none; }
+
+  .header { width: 100%; max-width: 420px; margin-bottom: 16px; }
+  .header h1 { font-size: 18px; font-weight: 600; color: #6ee7b7; }
+  .header p { font-size: 12px; color: #64748b; margin-top: 4px; line-height: 1.5; }
+
+  .status { font-size: 11px; padding: 4px 12px; border-radius: 99px; margin-bottom: 16px; }
+  .status.off { background: #334155; color: #94a3b8; }
+  .status.on { background: #065f46; color: #6ee7b7; }
+
+  .panel { width: 100%; max-width: 420px; background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; border: 1px solid #334155; }
+  .panel.disabled { opacity: 0.55; pointer-events: none; }
+  .panel-title { font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .anchor-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .anchor-info { font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace; color: #94a3b8; line-height: 1.6; }
+  .anchor-info .ok { color: #6ee7b7; }
+
+  .preview-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .preview-big { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; font-family: 'SF Mono', monospace; }
+  .preview-label { font-size: 11px; color: #64748b; }
+  .bar-wrap { width: 100%; height: 14px; background: #0f172a; border-radius: 7px; overflow: hidden; margin: 8px 0; position: relative; }
+  .bar-center { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #475569; transform: translateX(-50%); z-index: 1; }
+  .bar-fill { position: absolute; top: 0; bottom: 0; background: linear-gradient(90deg, #059669, #34d399); border-radius: 4px; transition: left 0.05s linear, width 0.05s linear; }
+  .raw-row { font-size: 12px; font-family: 'SF Mono', monospace; color: #64748b; }
+
+  .param-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; flex-wrap: wrap; }
+  .param-row label { color: #94a3b8; min-width: 56px; }
+  .param-select { padding: 4px 8px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #e2e8f0; font-size: 13px; }
+  .param-range { flex: 1; min-width: 100px; }
+
+  #trajCanvas { width: 100%; height: 100px; background: #0f172a; border-radius: 8px; display: block; }
+  .traj-meta { font-size: 11px; color: #64748b; margin-top: 6px; font-family: 'SF Mono', monospace; }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .btn { padding: 10px 14px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #059669; color: #fff; }
+  .btn-primary:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+  .btn-secondary { background: #334155; color: #e2e8f0; }
+  .btn-accent { background: #047857; color: #fff; }
+  .btn-accent:disabled { background: #334155; color: #64748b; }
+  .btn-danger { background: transparent; border: 1px solid #7f1d1d; color: #f87171; }
+  .btn-recording { background: #dc2626; color: #fff; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.7; } }
+
+  .hint { font-size: 12px; color: #475569; line-height: 1.5; }
+  .error { color: #f87171; font-size: 13px; margin: 8px 0; width: 100%; max-width: 420px; text-align: center; }
+  .warn { color: #fcd34d; font-size: 12px; margin-top: 6px; }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #065f46; color: #6ee7b7; padding: 8px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; }
+  .toast.show { opacity: 1; }
+
+  .export-area { display: none; width: 100%; max-width: 420px; margin-top: 10px; }
+  .export-area.show { display: block; }
+  .export-area textarea { width: 100%; height: 140px; padding: 8px; border: 1px solid #334155; border-radius: 8px; background: #1e293b; color: #94a3b8; font-size: 11px; font-family: 'SF Mono', monospace; resize: vertical; }
+
+  .meta { font-size: 11px; color: #475569; margin-top: 6px; }
+  .live-peak { font-size: 13px; color: #fcd34d; font-family: 'SF Mono', monospace; min-height: 1.4em; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/">← 主控制页</a> ·
+  <a href="/fusion-calibrate.html">Mode A</a> ·
+  <a href="/fusion-calibrate-flip.html">Mode B</a>
+</nav>
+
+<div class="header">
+  <h1>Mode C 摇晃标定</h1>
+  <p id="fusionSource" class="meta" style="margin-top:4px"></p>
+  <p>开发者调试：用户演示 <strong>±100% 满弯音</strong> 晃动力度 → 峰值标定 → Pitch Bend。不连接 Bridge、不发送 MIDI。用户校准页待接 <code>calibrate-shake.html</code>。</p>
+</div>
+
+<div class="status off" id="status">● 传感器未启动</div>
+
+<div class="panel" id="anchorPanel" style="display:none">
+  <div class="panel-title">峰值标定</div>
+  <p class="hint">竖屏握持。点击开始后，在约 <strong>5 秒</strong>内向<strong>两侧</strong>各晃到你认为的最大弯音力度（±100%）。不晃 = 0% 弯音（线性加速度为 0）。</p>
+
+  <div class="anchor-row">
+    <button class="btn btn-secondary" id="btnCapture" type="button">开始标定 ±100% 晃动力度</button>
+  </div>
+  <div class="live-peak" id="livePeak"></div>
+  <div class="anchor-info" id="peakMinInfo">负向峰值: 未标定</div>
+  <div class="anchor-info" id="peakMaxInfo">正向峰值: 未标定</div>
+  <div class="warn" id="anchorWarn" style="display:none"></div>
+</div>
+
+<div class="panel disabled" id="previewPanel" style="display:none">
+  <div class="panel-title">弯音预览</div>
+  <div class="preview-row">
+    <div>
+      <div class="preview-label">弯音 %</div>
+      <div class="preview-big" id="signedPct">—</div>
+    </div>
+    <div style="text-align:right">
+      <div class="preview-label">模拟 PB</div>
+      <div class="preview-big" id="pbSim">—</div>
+    </div>
+  </div>
+  <div class="bar-wrap">
+    <div class="bar-center"></div>
+    <div class="bar-fill" id="bendBar" style="left:50%;width:0%"></div>
+  </div>
+  <div class="raw-row">raw <span id="rawVal">—</span> m/s² · 轴 <span id="axisUsed">—</span> · t <span id="fusedT">—</span></div>
+  <div class="raw-row">源 <span id="motionSource">—</span></div>
+</div>
+
+<div class="panel disabled" id="paramPanel" style="display:none">
+  <div class="panel-title">映射参数</div>
+  <div class="param-row">
+    <label for="selAxis">投影轴</label>
+    <select class="param-select" id="selAxis">
+      <option value="auto">自动 (|x| vs |y|)</option>
+      <option value="x">X 轴</option>
+      <option value="y">Y 轴</option>
+    </select>
+  </div>
+  <div class="param-row">
+    <label for="rngDeadband">中心死区</label>
+    <input class="param-range" id="rngDeadband" type="range" min="0" max="10" step="1" value="2">
+    <span id="lblDeadband" style="font-family:monospace;font-size:12px;min-width:48px">2%</span>
+  </div>
+  <p class="hint">中心死区：不晃附近视为 0% 弯音，减少抖动。</p>
+</div>
+
+<div class="panel disabled" id="trajPanel" style="display:none">
+  <div class="panel-title">轨迹录制</div>
+  <p class="hint">来回晃几次，检查 signed% 是否平滑、是否能在 ±100 附近饱和。</p>
+  <div class="btn-row" style="margin-top:0">
+    <button class="btn btn-accent" id="btnRecStart" type="button">开始录制</button>
+    <button class="btn btn-secondary" id="btnRecStop" type="button" disabled>停止</button>
+  </div>
+  <canvas id="trajCanvas" width="392" height="100"></canvas>
+  <div class="traj-meta" id="trajMeta">尚未录制</div>
+</div>
+
+<div class="panel" id="exportPanel" style="display:none">
+  <div class="btn-row" style="margin-top:0">
+    <button class="btn btn-secondary" id="btnSave" type="button" disabled>保存到校准 storage</button>
+    <button class="btn btn-secondary" id="btnCopy" type="button">复制 JSON</button>
+    <button class="btn btn-danger" id="btnClear" type="button">清空标定</button>
+  </div>
+  <div class="export-area" id="exportArea">
+    <p class="hint" style="margin-top:10px">无法自动复制时，请手动全选下方文本：</p>
+    <textarea id="exportText" readonly></textarea>
+  </div>
+</div>
+
+<div class="error" id="error"></div>
+<p class="hint" id="hint">点击启动后授权 DeviceMotion（iOS 需用户手势）</p>
+<div class="meta" id="orientationMeta"></div>
+
+<button class="btn btn-primary" id="btnStart" type="button">启动传感器</button>
+
+<div class="toast" id="toast"></div>
+
+<script src="fusion.js?v=11"></script>
+<script src="fusion-calibrate-shake.js?v=2"></script>
+</body>
+</html>
