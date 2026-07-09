@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>姿态调试 — Phone MIDI CC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 16px 16px 48px; }
+
+  .nav { width: 100%; max-width: 420px; margin-bottom: 12px; font-size: 12px; }
+  .nav a { color: #64748b; text-decoration: none; }
+  .nav a:hover { color: #94a3b8; }
+
+  .header { width: 100%; max-width: 420px; margin-bottom: 16px; }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header p { font-size: 12px; color: #64748b; margin-top: 4px; line-height: 1.5; }
+
+  .status { font-size: 11px; padding: 4px 12px; border-radius: 99px; margin-bottom: 16px; }
+  .status.off { background: #334155; color: #94a3b8; }
+  .status.on { background: #065f46; color: #6ee7b7; }
+
+  .panel { width: 100%; max-width: 420px; background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .panel-title { font-size: 12px; font-weight: 600; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .live-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .live-item { background: #0f172a; border-radius: 8px; padding: 10px 12px; }
+  .live-item.dim { opacity: 0.65; }
+  .live-item.full { grid-column: 1 / -1; }
+  .live-label { font-size: 11px; color: #64748b; margin-bottom: 2px; }
+  .live-value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; font-family: 'SF Mono', 'Cascadia Code', monospace; line-height: 1.1; }
+  .live-unit { font-size: 14px; font-weight: 400; color: #64748b; }
+
+  .pose-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .pose-btn { padding: 8px 12px; border: 1px solid #334155; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 13px; cursor: pointer; }
+  .pose-btn:active:not(:disabled) { background: #334155; }
+  .pose-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pose-btn.captured { border-color: #059669; color: #6ee7b7; }
+
+  .snap-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+  .snap-table th { text-align: left; color: #64748b; font-weight: 500; padding: 6px 4px; border-bottom: 1px solid #334155; }
+  .snap-table td { padding: 6px 4px; border-bottom: 1px solid #1e293b; }
+  .snap-table tr:last-child td { border-bottom: none; }
+  .snap-empty { color: #475569; font-size: 12px; text-align: center; padding: 16px 0; }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .btn { padding: 10px 16px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #3b82f6; color: #fff; }
+  .btn-primary:active { background: #2563eb; }
+  .btn-primary:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+  .btn-secondary { background: #334155; color: #e2e8f0; }
+  .btn-secondary:active { background: #475569; }
+  .btn-danger { background: transparent; border: 1px solid #7f1d1d; color: #f87171; }
+  .btn-danger:active { background: #7f1d1d33; }
+
+  .hint { font-size: 12px; color: #475569; margin-top: 8px; line-height: 1.5; }
+  .error { color: #f87171; font-size: 13px; margin-top: 8px; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #065f46; color: #6ee7b7; padding: 8px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; }
+  .toast.show { opacity: 1; }
+
+  .export-area { display: none; width: 100%; margin-top: 10px; }
+  .export-area.show { display: block; }
+  .export-area textarea { width: 100%; height: 120px; padding: 8px; border: 1px solid #334155; border-radius: 8px; background: #0f172a; color: #94a3b8; font-size: 11px; font-family: 'SF Mono', monospace; resize: vertical; }
+
+  .meta { font-size: 11px; color: #475569; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<nav class="nav"><a href="/">← 返回主控制页</a></nav>
+
+<div class="header" style="background:#713f1233;border:1px solid #713f12;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fcd34d">
+  <strong>已废弃</strong> — 请使用 <a href="/calibrate.html" style="color:#fcd34d">校准设备</a>（用户）或 <a href="/fusion-calibrate.html" style="color:#fcd34d">融合调试</a>（开发者）。
+</div>
+
+<div class="header">
+  <h1>Mode A 姿态调试</h1>
+  <p>采集关键姿势下的 β（pitch）与 γ（roll），导出 JSON 后用于确定双轴映射范围。本页不连接 Bridge、不发送 MIDI。</p>
+</div>
+
+<div class="status off" id="status">● 传感器未启动</div>
+
+<div class="panel" id="livePanel" style="display:none">
+  <div class="panel-title">实时姿态</div>
+  <div class="live-grid">
+    <div class="live-item">
+      <div class="live-label">β pitch</div>
+      <div class="live-value"><span id="liveBeta">—</span><span class="live-unit">°</span></div>
+    </div>
+    <div class="live-item">
+      <div class="live-label">γ roll</div>
+      <div class="live-value"><span id="liveGamma">—</span><span class="live-unit">°</span></div>
+    </div>
+    <div class="live-item dim full">
+      <div class="live-label">α yaw（仅供参考）</div>
+      <div class="live-value" style="font-size:20px"><span id="liveAlpha">—</span><span class="live-unit">°</span></div>
+    </div>
+  </div>
+  <div class="meta" id="orientationMeta"></div>
+</div>
+
+<div class="panel" id="capturePanel" style="display:none">
+  <div class="panel-title">关键姿势抓拍</div>
+  <p class="hint">保持竖屏握持。摆好姿势后点击对应按钮，将采样约 0.4 秒取平均。</p>
+  <div class="pose-grid" id="poseButtons"></div>
+  <table class="snap-table">
+    <thead>
+      <tr><th>姿势</th><th>β</th><th>γ</th><th>时间</th></tr>
+    </thead>
+    <tbody id="snapBody">
+      <tr><td colspan="4" class="snap-empty">尚未抓拍</td></tr>
+    </tbody>
+  </table>
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="btnCopy" type="button">复制 JSON</button>
+    <button class="btn btn-danger" id="btnClear" type="button">清空全部</button>
+  </div>
+  <div class="export-area" id="exportArea">
+    <p class="hint">无法自动复制时，请手动全选下方文本：</p>
+    <textarea id="exportText" readonly></textarea>
+  </div>
+</div>
+
+<div class="error" id="error"></div>
+<p class="hint" id="hint">点击启动后授权 DeviceOrientation（iOS 需用户手势）</p>
+
+<button class="btn btn-primary" id="btnStart" type="button">启动传感器</button>
+
+<div class="toast" id="toast"></div>
+
+<script src="pose-debug.js"></script>
+</body>
+</html>

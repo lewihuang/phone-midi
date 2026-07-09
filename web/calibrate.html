@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>校准设备 — Phone MIDI CC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 20px 16px 40px; }
+
+  .nav { width: 100%; max-width: 360px; margin-bottom: 16px; font-size: 13px; }
+  .nav a { color: #64748b; text-decoration: none; }
+
+  .card { width: 100%; max-width: 360px; background: #1e293b; border-radius: 16px; padding: 24px 20px; }
+
+  .steps { display: flex; gap: 8px; margin-bottom: 20px; justify-content: center; }
+  .step-dot { width: 10px; height: 10px; border-radius: 50%; background: #334155; }
+  .step-dot.active { background: #3b82f6; }
+  .step-dot.done { background: #059669; }
+
+  .step-label { font-size: 11px; color: #64748b; text-align: center; margin-bottom: 8px; }
+  h1 { font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 12px; line-height: 1.4; }
+  .desc { font-size: 14px; color: #94a3b8; text-align: center; line-height: 1.6; margin-bottom: 24px; }
+
+  .preview { display: none; margin-top: 8px; margin-bottom: 20px; }
+  .preview.show { display: block; }
+  .cc-big { font-size: 48px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+  .cc-label { font-size: 12px; color: #64748b; text-align: center; margin-bottom: 8px; }
+  .bar-wrap { width: 100%; height: 14px; background: #0f172a; border-radius: 7px; overflow: hidden; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 7px; transition: width 0.05s linear; width: 0%; }
+
+  .btn { display: block; width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+  .btn-primary { background: #3b82f6; color: #fff; }
+  .btn-primary:active { background: #2563eb; }
+  .btn-primary:disabled { background: #334155; color: #64748b; }
+  .btn-success { background: #059669; color: #fff; }
+  .btn-ghost { background: transparent; color: #64748b; font-size: 14px; font-weight: 500; margin-top: 16px; }
+
+  .error { color: #f87171; font-size: 13px; text-align: center; margin-top: 12px; max-width: 360px; }
+  .foot { font-size: 11px; color: #475569; text-align: center; margin-top: 16px; max-width: 320px; line-height: 1.5; }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #065f46; color: #6ee7b7; padding: 10px 18px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<nav class="nav"><a href="/">← 返回主控制页</a></nav>
+
+<div class="card">
+  <div class="step-label" id="stepLabel">步骤 1 / 3</div>
+  <div class="steps" id="stepDots">
+    <span class="step-dot active" data-i="0"></span>
+    <span class="step-dot" data-i="1"></span>
+    <span class="step-dot" data-i="2"></span>
+  </div>
+
+  <h1 id="stepTitle">确认最低位置</h1>
+  <p class="desc" id="stepDesc">竖屏握持，与平时演奏相同。手臂自然下垂，然后点击下方按钮。</p>
+
+  <div class="preview" id="previewBlock">
+    <div class="cc-label">抬手预览 · CC 0 – 127</div>
+    <div class="cc-big" id="ccVal">—</div>
+    <div class="bar-wrap" style="margin-top:12px"><div class="bar-fill" id="ccBar"></div></div>
+  </div>
+
+  <button class="btn btn-primary" id="btnAction" type="button">确认：这是最低位置 (0)</button>
+  <button class="btn btn-ghost" id="btnBack" type="button" style="display:none">上一步</button>
+</div>
+
+<p class="error" id="error"></p>
+<p class="foot">校准数据保存在本机浏览器。换手机或清除站点数据后需重新校准。</p>
+
+<div class="toast" id="toast"></div>
+
+<script src="fusion.js?v=3"></script>
+<script src="calibrate.js"></script>
+</body>
+</html>
