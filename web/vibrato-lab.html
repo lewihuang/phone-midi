@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>揉弦调试 · Mode C</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  body { padding: 14px 14px 60px; display: flex; flex-direction: column; align-items: center; }
+  main { width: 100%; max-width: 440px; }
+
+  .status { font-size: 11px; padding: 4px 12px; border-radius: 99px; display: inline-block; margin-bottom: 12px; }
+  .status.off { background: #334155; color: #94a3b8; }
+  .status.on { background: #065f46; color: #6ee7b7; }
+  .status.warn { background: #713f12; color: #fcd34d; }
+
+  h1 { font-size: 19px; font-weight: 700; margin-bottom: 4px; }
+  .sub { font-size: 12px; color: #94a3b8; line-height: 1.6; margin-bottom: 14px; }
+  .sub a { color: #93c5fd; text-decoration: none; }
+
+  section { background: #16213a; border: 1px solid #24314d; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  section > h2 { font-size: 12px; font-weight: 600; color: #93c5fd; letter-spacing: 0.04em; margin-bottom: 10px; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { flex: 1; min-width: 96px; padding: 11px 10px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; background: #3b82f6; color: #fff; }
+  .btn:active { background: #2563eb; }
+  .btn.ghost { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; }
+  .btn.ghost:active { background: #334155; }
+  .btn.on { background: #059669; }
+  .btn.off { background: #475569; }
+  .btn:disabled { background: #334155; color: #64748b; }
+
+  .readout { display: flex; align-items: baseline; gap: 10px; }
+  .big { font-size: 46px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; min-width: 140px; }
+  .unit { font-size: 13px; color: #64748b; }
+  .kvs { font-size: 11.5px; color: #94a3b8; margin-top: 8px; font-variant-numeric: tabular-nums; line-height: 1.7; }
+  .kvs b { color: #e2e8f0; font-weight: 600; }
+
+  .bar-wrap { height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; margin-top: 10px; position: relative; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+  .bar-mid { position: absolute; left: 50%; top: 0; width: 1px; height: 100%; background: #64748b; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 3px; border-bottom: 1px solid #1e293b; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #64748b; font-weight: 500; }
+  tr.dead td { color: #64748b; }
+  tr.live td { color: #e2e8f0; }
+  tr.pick td { color: #6ee7b7; font-weight: 600; }
+  .tag { font-size: 10px; padding: 1px 5px; border-radius: 99px; background: #1e293b; color: #94a3b8; }
+  .tag.ok { background: #065f46; color: #6ee7b7; }
+  .tag.no { background: #3f1d1d; color: #fca5a5; }
+
+  .sl { margin-bottom: 11px; }
+  .sl-head { display: flex; justify-content: space-between; font-size: 11.5px; color: #94a3b8; margin-bottom: 3px; }
+  .sl-head b { color: #e2e8f0; font-variant-numeric: tabular-nums; }
+  .sl input[type=range] { width: 100%; accent-color: #3b82f6; }
+  .sl-note { font-size: 10.5px; color: #64748b; line-height: 1.5; }
+
+  .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+  .seg button { flex: 1; padding: 7px 4px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #94a3b8; font-size: 12px; cursor: pointer; }
+  .seg button.sel { background: #1d4ed8; border-color: #1d4ed8; color: #fff; font-weight: 600; }
+
+  .err { color: #fca5a5; font-size: 12px; min-height: 16px; margin-top: 6px; }
+  .hint { font-size: 11px; color: #475569; line-height: 1.6; margin-top: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="status off" id="status">● 传感器未启动</div>
+  <h1>揉弦调试 · Mode C</h1>
+  <p class="sub">
+    揉弦 → 音高弯音。手机做大提琴/小提琴式揉弦，本页显示每个传感器通道的强度、标定力度、并可直接发到 DAW 试听。
+    <a href="/?mode=C">← 回到主页面</a>
+  </p>
+
+  <section>
+    <h2>传感器 / 输出</h2>
+    <div class="row">
+      <button class="btn" id="btnSensor">启动传感器</button>
+      <button class="btn off" id="btnDaw">发送到 DAW：关</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="btnCal">校准：录 5 秒揉弦</button>
+      <button class="btn ghost" id="btnReset">复位</button>
+    </div>
+    <div class="err" id="err"></div>
+  </section>
+
+  <section>
+    <h2>实时</h2>
+    <div class="readout">
+      <div class="big" id="cents">—</div>
+      <div class="unit">音分 (cent)</div>
+    </div>
+    <div class="bar-wrap"><div class="bar-mid"></div><div class="bar-fill" id="bar" style="width:50%"></div></div>
+    <div class="kvs" id="live">等待传感器…</div>
+  </section>
+
+  <section>
+    <h2>通道强度（音分，gain 1 时）</h2>
+    <table>
+      <thead>
+        <tr><th>通道</th><th>传感器</th><th>原始</th><th>音分</th><th>电平</th><th>gain</th><th>状态</th></tr>
+      </thead>
+      <tbody id="chBody"></tbody>
+    </table>
+    <p class="hint">「电平」是选择器实际使用的统计量（150 ms 窗口峰值的中位数）。只有可用通道会被选为输出。</p>
+  </section>
+
+  <section>
+    <h2>校准结果</h2>
+    <div class="kvs" id="calOut">尚未校准：当前用估算 gain（正常揉弦 ≈ ±30 音分）。</div>
+  </section>
+
+  <section>
+    <h2>参数</h2>
+    <div class="seg" id="segSrc"></div>
+    <div class="seg" id="segAxis"></div>
+    <div class="seg" id="segInterp"></div>
+    <div id="sliders"></div>
+    <p class="hint">本工具**忠实映射所有手部动作**（慢速倾斜也会输出），不做"这是不是真揉弦"的判定：
+      普通揉弦交给音源自带的揉弦功能，这里演奏的是手势本身。手停下来时输出精确为 0（自动回中）。
+      改 hpHz / lpHz 会重建滤波器（状态清零，约 0.3 秒起振）；其余参数即时生效。</p>
+  </section>
+
+  <section>
+    <h2>诊断</h2>
+    <div class="kvs" id="diag">—</div>
+    <p class="hint" id="latHint"></p>
+  </section>
+
+  <section>
+    <h2>弯音目标</h2>
+    <div class="row" style="align-items:center">
+      <span class="unit">MIDI 通道</span>
+      <select class="tag" id="ch" style="padding:6px 8px">
+        <option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option>
+        <option value="4">5</option><option value="5">6</option><option value="6">7</option><option value="7">8</option>
+      </select>
+      <button class="btn ghost" id="btnClear" style="flex:2">清除校准（回到估算 gain）</button>
+    </div>
+    <p class="hint">Nuendo 默认 ±100 display = ±2 半音 = ±200 音分；若你改过弯音范围，请同步下面的「半音数」。 </p>
+    <div class="sl">
+      <div class="sl-head"><span>DAW 弯音范围（半音）</span><b id="semV">2</b></div>
+      <input type="range" id="sem" min="1" max="12" step="1" value="2">
+    </div>
+  </section>
+</main>
+
+<script src="vibrato.js?v=20"></script>
+<script src="vibrato-lab.js?v=20"></script>
+</body>
+</html>

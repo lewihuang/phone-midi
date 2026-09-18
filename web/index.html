@@ -174,6 +174,8 @@
 
   .error { color: #f87171; font-size: 13px; text-align: center; margin-top: 10px; max-width: 360px; min-height: 18px; }
 
+  .shake-note { font-size: 11.5px; color: #64748b; margin-top: 10px; text-align: center; max-width: 360px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+
 </style>
 
 </head>
@@ -200,7 +202,7 @@
 
         <li>选择下方控制方式（抬手 / 翻转 / 摇晃弯音）</li>
 
-        <li>模式 A、B 需先完成校准，再点击启动</li>
+        <li>模式 A、B 需先完成校准；模式 C 直接可用（静止时自动居中，无需校准）</li>
 
         <li>启动后倾斜或晃动手机，观察数值与 DAW 中的 MIDI 响应</li>
 
@@ -239,6 +241,8 @@
   <button class="btn" id="btnStart" onclick="start()" disabled>启动 · 抬手推子</button>
 
   <p class="hint" id="hint">选择模式后可启动；A/B 需先完成对应校准</p>
+
+  <p class="hint" style="margin-top:6px"><a href="/latency.html" style="color:#475569;text-decoration:none">延迟诊断 · 跟手调参</a></p>
 
 </div>
 
@@ -288,6 +292,10 @@
 
 
 
+  <p class="shake-note" id="modeNote" style="display:none"></p>
+
+
+
   <div class="cfg-row" id="cfgRow">
 
     <span class="range-label cc-cfg">CC</span>
@@ -296,7 +304,11 @@
 
     <span class="range-label cc-cfg">Ch</span>
 
-    <select class="cfg-select cc-cfg" id="selCh"></select>
+    <select class="cfg-select ch-cfg" id="selCh"></select>
+
+    <span class="range-label depth-cfg">深度</span>
+
+    <input class="range-input depth-cfg" id="inDepth" type="number" value="1" min="0.25" max="2" step="0.05">
 
     <input class="range-input range-cfg" id="inMin" type="number" value="0" step="0.01">
 
@@ -328,9 +340,13 @@
 
 
 
-<script src="fusion.js?v=11"></script>
+<script src="fusion.js?v=21"></script>
 
-<script src="app.js?v=10"></script>
+<!-- vibrato.js is only loaded for its keep-awake helper here; the rotational vibrato engine
+     itself is no longer wired to any mode (it lives on /vibrato-lab.html for experiments). -->
+<script src="vibrato.js?v=21"></script>
+
+<script src="app.js?v=21"></script>
 
 </body>
 

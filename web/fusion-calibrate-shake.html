@@ -75,7 +75,8 @@
 <nav class="nav">
   <a href="/">← 主控制页</a> ·
   <a href="/fusion-calibrate.html">Mode A</a> ·
-  <a href="/fusion-calibrate-flip.html">Mode B</a>
+  <a href="/fusion-calibrate-flip.html">Mode B</a> ·
+  <a href="/latency.html">延迟诊断</a>
 </nav>
 
 <div class="header">
@@ -137,6 +138,69 @@
   <p class="hint">中心死区：不晃附近视为 0% 弯音，减少抖动。</p>
 </div>
 
+<div class="panel disabled" id="runtimePanel" style="display:none">
+  <div class="panel-title">生产链路运行时（含真机验收读数）</div>
+  <p class="hint">
+    这里显示的是主控制页实际使用的同一条链路（<code>F.feedShakeMotion</code>）：
+    线性加速度提取 → 自动零位 → 轴选择 → 固定/向导校准刻度 → One Euro → 死区。
+    数值可直接对照 <code>docs/spec/mode-c-shake.md</code> 的 A1 / A9 / A10 / A11。
+  </p>
+
+  <div class="param-row">
+    <label for="rngBend">bend 范围</label>
+    <input class="param-range" id="rngBend" type="range" min="0.05" max="1" step="0.05" value="0.5">
+    <span id="lblBend" style="font-family:monospace;font-size:12px;min-width:52px">±50%</span>
+  </div>
+  <div class="param-row">
+    <label for="rngDeadC">中心死区</label>
+    <input class="param-range" id="rngDeadC" type="range" min="0" max="400" step="10" value="30">
+    <span id="lblDeadC" style="font-family:monospace;font-size:12px;min-width:52px">30</span>
+  </div>
+  <div class="param-row">
+    <label for="rngStep">发送步进</label>
+    <input class="param-range" id="rngStep" type="range" min="1" max="64" step="1" value="4">
+    <span id="lblStep" style="font-family:monospace;font-size:12px;min-width:52px">4</span>
+  </div>
+  <div class="param-row">
+    <label for="rngStill">静止阈值</label>
+    <input class="param-range" id="rngStill" type="range" min="0.2" max="6" step="0.1" value="1.2">
+    <span id="lblStill" style="font-family:monospace;font-size:12px;min-width:52px">1.2</span>
+  </div>
+  <div class="param-row">
+    <label for="rngScale">固定满量程</label>
+    <input class="param-range" id="rngScale" type="range" min="3" max="400" step="1" value="80">
+    <span id="lblScale" style="font-family:monospace;font-size:12px;min-width:64px">80 m/s²</span>
+  </div>
+  <p class="hint" style="margin-top:-4px">
+    <b>固定刻度</b>：晃到这个幅度 = 跑满 bend 范围（上方的 bend 范围），更轻则按比例变小。
+    力度与输出严格成正比、不会自适应漂移，所以这个值直接决定手感：
+    <b>普通摇晃恰好用掉一半量程</b>通常最舒服；若轻微晃就撑满，把它调大。
+  </p>
+  <div class="anchor-row">
+    <button class="btn btn-secondary" id="btnFillScale2" type="button">最大力度 ×2 → 满量程（推荐）</button>
+    <button class="btn btn-secondary" id="btnFillScale1" type="button">最大力度 ×1 → 满量程</button>
+  </div>
+  <p class="hint" style="margin-top:-2px">
+    先按<b>你自己的最大力度</b>晃几下再点：×2 = 最大力度只用掉一半量程（留余量）；
+    ×1 = 最大力度正好跑满量程。
+  </p>
+
+  <div class="raw-row">轴 <span id="rtAxis">—</span> · 刻度 <span id="rtScale">—</span> · 来源 <span id="rtMode">—</span></div>
+  <div class="raw-row"><b>你的摇晃峰值 <span id="rtMotion">—</span></b>（近 3 秒 max / p95）</div>
+  <div class="raw-row"><b>用量 <span id="rtUsage">—</span></b>（近 3 秒峰值占 bend 范围比例）</div>
+  <div class="raw-row">PB <span id="rtPb">—</span> · u <span id="rtU">—</span> · 状态 <span id="rtState">—</span></div>
+  <div class="raw-row">A1/A9 静止偏移 max <span id="rtStatic">—</span> 计数（<span id="rtStaticN">0</span> 样本 / <span id="rtStaticSpan">0</span> s 窗口）</div>
+  <div class="raw-row">A10 停晃回中 <span id="rtRecenter">—</span></div>
+  <div class="raw-row">零位 bias <span id="rtBias">—</span> m/s²</div>
+  <div class="raw-row">采样 <span id="rtSamples">0</span> · 降级 <span id="rtDegraded">—</span></div>
+
+  <div class="anchor-row">
+    <button class="btn btn-secondary" id="btnRtReset" type="button">重置运行时（含零位）</button>
+    <button class="btn btn-secondary" id="btnClearCal" type="button">清除向导校准（回到固定值）</button>
+  </div>
+  <p class="hint">A1 要求静止偏移 ≤ 16 计数；A10 要求停晃后 ≤ 300 ms 回中；改 bend 范围或满量程应立即生效。</p>
+</div>
+
 <div class="panel disabled" id="trajPanel" style="display:none">
   <div class="panel-title">轨迹录制</div>
   <p class="hint">来回晃几次，检查 signed% 是否平滑、是否能在 ±100 附近饱和。</p>
@@ -168,7 +232,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="fusion.js?v=11"></script>
-<script src="fusion-calibrate-shake.js?v=2"></script>
+<script src="fusion.js?v=16"></script>
+<script src="fusion-calibrate-shake.js?v=6"></script>
 </body>
 </html>

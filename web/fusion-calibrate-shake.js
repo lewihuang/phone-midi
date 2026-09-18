@@ -328,8 +328,144 @@
 
   function onMotion(event) {
     if (!active || busy) return;
+    // One feed of the production runtime per event; the legacy preview reads the
+    // anchor-based path separately so both can be compared side by side.
+    feedRuntime(event);
     liveMotion = computeLive(event);
     updatePreview();
+  }
+
+  // ── production runtime mirror (acceptance A1 / A9 / A10 / A11) ──────────────
+  const elRngBend = document.getElementById('rngBend');
+  const elLblBend = document.getElementById('lblBend');
+  const elRngDeadC = document.getElementById('rngDeadC');
+  const elLblDeadC = document.getElementById('lblDeadC');
+  const elRngStep = document.getElementById('rngStep');
+  const elLblStep = document.getElementById('lblStep');
+  const elRngStill = document.getElementById('rngStill');
+  const elLblStill = document.getElementById('lblStill');
+  const elRngScale = document.getElementById('rngScale');
+  const elLblScale = document.getElementById('lblScale');
+  const elBtnFillScale1 = document.getElementById('btnFillScale1');
+  const elBtnFillScale2 = document.getElementById('btnFillScale2');
+  const elRtMotion = document.getElementById('rtMotion');
+  const elRtUsage = document.getElementById('rtUsage');
+  const elRtAxis = document.getElementById('rtAxis');
+  const elRtScale = document.getElementById('rtScale');
+  const elRtMode = document.getElementById('rtMode');
+  const elRtPb = document.getElementById('rtPb');
+  const elRtU = document.getElementById('rtU');
+  const elRtState = document.getElementById('rtState');
+  const elRtStatic = document.getElementById('rtStatic');
+  const elRtStaticN = document.getElementById('rtStaticN');
+  const elRtStaticSpan = document.getElementById('rtStaticSpan');
+  const elRtRecenter = document.getElementById('rtRecenter');
+  const elRtBias = document.getElementById('rtBias');
+  const elRtSamples = document.getElementById('rtSamples');
+  const elRtDegraded = document.getElementById('rtDegraded');
+  const elBtnRtReset = document.getElementById('btnRtReset');
+  const elBtnClearCal = document.getElementById('btnClearCal');
+
+  function feedRuntime(event) {
+    const out = F.feedShakeMotion(event);
+    if (out) lastRuntime = out;
+    return out;
+  }
+
+  let lastRuntime = null;
+
+  function syncTuningLabels() {
+    const t = F.getShakeTuning();
+    elRngBend.value = t.bendRange;
+    elLblBend.textContent = '±' + Math.round(t.bendRange * 100) + '%';
+    elRngDeadC.value = t.deadbandCounts;
+    elLblDeadC.textContent = String(t.deadbandCounts);
+    elRngStep.value = t.minStepCounts;
+    elLblStep.textContent = String(t.minStepCounts);
+    elRngStill.value = t.stillThreshold;
+    elLblStill.textContent = Number(t.stillThreshold).toFixed(1);
+    elRngScale.value = t.fixedScale;
+    elLblScale.textContent = Math.round(t.fixedScale) + ' m/s²';
+  }
+
+  function renderRuntime() {
+    const d = F.getShakeDiagnostics();
+    const rt = lastRuntime;
+    const scale = d.scaleNeg == null || d.scalePos == null
+      ? '—'
+      : '−' + Math.round(d.scaleNeg) + '/' + Math.round(d.scalePos) + ' m/s²';
+    elRtAxis.textContent = d.axis + (d.axisMode === 'auto' ? '（自动）' : '（锁定）');
+    elRtScale.textContent = scale + ' · ' + (d.scaleMode === 'calibrated' ? '向导校准' : '固定值');
+    elRtMode.textContent = d.source || '—';
+    const fmtRange = (lo, hi) => (lo == null || hi == null
+      ? '—'
+      : '−' + lo.toFixed(1) + '/+' + hi.toFixed(1) + ' m/s²');
+    elRtMotion.textContent = fmtRange(d.motionMaxNeg, d.motionMaxPos)
+      + '  (p95 ' + (d.motionP95Neg == null || d.motionP95Pos == null
+        ? '—'
+        : '−' + d.motionP95Neg.toFixed(1) + '/+' + d.motionP95Pos.toFixed(1)) + ')';
+    elRtUsage.textContent = d.usagePct == null ? '—' : d.usagePct + '%';
+    elRtPb.textContent = rt ? String(rt.pb) : '—';
+    elRtU.textContent = rt ? rt.u.toFixed(3) : '—';
+    elRtState.textContent = d.stationary ? '静止（居中）' : '晃动中';
+    elRtStatic.textContent = d.staticMaxOffset == null ? '—' : String(Math.round(d.staticMaxOffset));
+    elRtStaticN.textContent = String(d.staticSamples);
+    elRtStaticSpan.textContent = (d.staticSpanMs / 1000).toFixed(1);
+    elRtRecenter.textContent = d.recenterMs == null ? '—' : d.recenterMs + ' ms';
+    elRtBias.textContent = rt
+      ? rt.bias.x.toFixed(2) + ' / ' + rt.bias.y.toFixed(2)
+      : '—';
+    elRtSamples.textContent = String(d.samples);
+    elRtDegraded.textContent = d.degraded ? '是（重力估计）' : '否';
+  }
+
+  function bindRuntimeControls() {
+    const onTune = () => {
+      F.setShakeTuning({
+        bendRange: parseFloat(elRngBend.value),
+        deadbandCounts: parseFloat(elRngDeadC.value),
+        minStepCounts: parseFloat(elRngStep.value),
+        stillThreshold: parseFloat(elRngStill.value),
+        fixedScale: parseFloat(elRngScale.value),
+      });
+      syncTuningLabels();
+    };
+    [elRngBend, elRngDeadC, elRngStep, elRngStill, elRngScale].forEach((el) => el.addEventListener('input', onTune));
+
+    // One-tap calibration of the fixed scale: shake at the effort that should mean "full
+    // bend", then capture it. Removes the guesswork of picking a number in m/s².
+    const fillFromPeak = (multiplier) => {
+      const d = F.getShakeDiagnostics();
+      const peakNeg = d.motionMaxNeg;
+      const peakPos = d.motionMaxPos;
+      if (peakNeg == null || peakPos == null || Math.max(peakNeg, peakPos) < 2) {
+        showToast('先按你的最大力度晃几下，再点这里');
+        return;
+      }
+      const neg = Math.round(peakNeg * multiplier);
+      const pos = Math.round(peakPos * multiplier);
+      F.saveFixedShakeScales(neg, pos, {
+        source: d.source,
+        sources: d.srcCounts,
+        windowMs: F.getShakeTuning().measureWindowMs,
+      });
+      F.resetShakeRuntime();
+      showToast('满量程设为 −' + neg + '/+' + pos + ' m/s²（峰值 ×' + multiplier + '）');
+    };
+    elBtnFillScale1.addEventListener('click', () => fillFromPeak(1));
+    elBtnFillScale2.addEventListener('click', () => fillFromPeak(2));
+
+    elBtnRtReset.addEventListener('click', () => {
+      F.resetShakeRuntime();
+      lastRuntime = null;
+      showToast('运行时已重置（零位清空）');
+    });
+    elBtnClearCal.addEventListener('click', () => {
+      F.clearFixedShakeScales();
+      F.resetShakeRuntime();
+      showToast('已清除向导校准，回到固定值 ' + Math.round(F.getShakeTuning().fixedScale) + ' m/s²');
+    });
+    setInterval(renderRuntime, 250);
   }
 
   async function start() {
@@ -356,10 +492,12 @@
       renderAnchorInfo();
     }
 
-    ['anchorPanel', 'previewPanel', 'paramPanel', 'trajPanel', 'exportPanel'].forEach((id) => {
+    ['anchorPanel', 'previewPanel', 'paramPanel', 'trajPanel', 'exportPanel', 'runtimePanel'].forEach((id) => {
       document.getElementById(id).style.display = '';
     });
 
+    F.resetShakeRuntime();
+    syncTuningLabels();
     window.addEventListener('devicemotion', onMotion, true);
   }
 
@@ -383,6 +521,7 @@
     elBtnSave.addEventListener('click', saveToStorage);
     elBtnCopy.addEventListener('click', copyJson);
     elBtnClear.addEventListener('click', clearAll);
+    bindRuntimeControls();
     syncDeadbandLabel();
     renderAnchorInfo();
   }
