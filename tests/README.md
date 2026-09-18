@@ -11,7 +11,9 @@ powershell -File tests\run.ps1
 |------|------|
 | `vibrato.test.mjs` | `web/vibrato.js` 整条链：静音/门限、线性与上限、重力与慢速抑制、通道选择与换轴、迟滞、可用性、输出率与台阶、时间戳抖动、一次性标定、延迟（与解析相位对照）、弯音换算、传感器停摆保护、**慢速动作静音（振荡判定）与归中** |
 | `bridge_protocol_check.py` | 真实 `MappingEngine`：`fused_vibrato` 不再二次平滑、死区不重复施加、14 位分辨率、中心恰为 8192、目标类型回退、**弯音守护（dead-man）** |
-| `bridge_boot_check.py` | **真的把 Bridge 起来**（`--no-gui --no-ssl --port 8791`）并抓取它服务的页面：验证 CLI 参数、handler 构造、守护任务、静态文件全部接通（没有 MIDI 端口时跳过） |
+| `bridge_boot_check.py` | **真的把 Bridge 起来**（`--no-gui --no-ssl --port 8791`）并抓取它服务的页面：验证 CLI 参数、handler 构造、守护任务、静态文件全部接通；并验证**第二个实例拒绝共用端口**（见下） |
+| `bridge_ui_check.py` | 精简监视窗（不弹窗）：只保留 值+进度条、置顶、下限 420×84 且可拉伸、展开态保持原样、端口占用时窗口报错、START/STOP 不阻塞界面、窗口几何记忆 |
+| `measure_window.py` | **手工核对工具**：真的把窗口映射出来量尺寸与进度条厚度（会短暂弹窗几秒）。未映射的窗口 `winfo_*` 不说真话，这类"窗口大小不对"的问题只能这样量 |
 | `pages_smoke.mjs` | 桩 DOM 上**真实加载** `index.html` / `vibrato-lab.html` 的脚本：元素 id 齐全、表格/滑块/分段控件构建、诊断渲染 |
 
 ## 约定
@@ -20,3 +22,10 @@ powershell -File tests\run.ps1
   否则测的只是"和上次一样"。
 - 阈值要贴着**设计承诺**写，不要贴着当前输出写。实现改好了，测试应该更容易通过。
 - 报告的数字会写进 `docs/spec/mode-c-vibrato.md` §13；改了实现就要更新那里的实测表。
+
+## 端口占用必须失败（别改回 SO_REUSEADDR）
+
+`bind_server_socket()` 在 Windows 上用 `SO_EXCLUSIVEADDRUSE`。实测：用 `SO_REUSEADDR` 时
+**两个进程可以同时绑定同一端口**，于是手机连的是**上一个残留实例**，而新窗口显示"运行中"
+却 client=0——这正是"手机显示已连接、PC 没有 client"的原因。现在第二个实例会直接报错退出，
+GUI 也会把错误显示在窗口里（exe 没有控制台，只写日志等于没报）。
