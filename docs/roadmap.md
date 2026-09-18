@@ -45,9 +45,14 @@
 | **XY Pad 触屏** | 中 | 屏幕二维控制面 |
 | **预设保存/加载** | 中 | 多套校准 / 映射预设 |
 | **Web 配置完整 UI** | 大 | 可视化编辑 mapping |
-| **14-bit CC** | 小 | 高精度输出 |
+| **多路同时控制** | 中 | 协议 `i=0` 硬编码待解，一部手机多 CC |
+| **Mode C 揉弦** | 中 | 🔄 目标重定义为模拟小提琴揉弦：[spec/mode-c-vibrato.md](spec/mode-c-vibrato.md)（设计已确认，待实现）。旧"摇晃弯音"实现见 [spec/mode-c-shake.md](spec/mode-c-shake.md) + [ADR 0003](adr/0003-explicit-target-kind.md) |
+| **14-bit CC** | 小 | 高精度输出（Pitch Bend 已于 2026-09-17 改为真 14-bit） |
 | **Android 原生** | 大 | 原生 APK |
-| **macOS 支持** | 中 | mido 后端 |
+| **macOS 支持** | 中 | 换掉 ctypes winmm 后端 |
+
+> 延迟基线（2026-09-17 实测）：Bridge 往返 p50 0.5 ms；Mode B 滤波链 t90 33 ms；
+> 采样与系统姿态融合约 20–50 ms 为平台下限。诊断页：`/latency.html`。
 
 ### 下一步建议
 

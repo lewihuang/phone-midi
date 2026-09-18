@@ -58,6 +58,35 @@
         },
       ],
     },
+    shake: {
+      pageTitle: '力度精调 · 摇晃弯音 (C)',
+      minToast: '零位已确认',
+      maxToast: '力度已记录',
+      // Mode C works without any of this (adaptive scale); the wizard only *pins*
+      // the scale so the bend amount stops depending on how hard you happen to shake.
+      steps: [
+        {
+          title: '确认静止零位',
+          desc: '把手机以演奏姿势拿好，保持不动约 2 秒。系统会顺便测出「静止时的残余偏移」——'
+            + '它决定弯音会不会跑调。',
+          action: '开始：保持静止',
+          key: 'zero',
+        },
+        {
+          title: '演示满力度',
+          desc: '向两侧来回晃动到你觉得「这就是满弯音」的力度，持续 5 秒。'
+            + '只记录幅度，不会发送 MIDI。',
+          action: '开始：演示 ±100% 力度',
+          key: 'effort',
+        },
+        {
+          title: '回放校验',
+          desc: '按刚才的力度再晃 3 秒，看看实际用到多少刻度。',
+          action: '保存并校验',
+          key: 'done',
+        },
+      ],
+    },
   };
 
   const cfg = WIZARD[profileId] || WIZARD.lift;
@@ -91,6 +120,115 @@
   let liveG = null;
   let liveFlip = null;
   const usesGravity = profile.input === 'gravity';
+  const isShake = profile.input === 'motion';
+
+  // ── Mode C (shake) wizard state ─────────────────────────────────────────────
+  // A single devicemotion handler feeds the *production* runtime
+  // (F.feedShakeMotion) so the wizard measures exactly what the instrument will do,
+  // auto-zero included. Recording just taps that stream.
+  const shakeRec = { active: false, values: [], samples: 0, srcs: {}, t0: 0 };
+  let shakeStep1 = null;   // { residual, source, samples }
+  let shakeStep2 = null;   // { robust, scaleNeg, scalePos, samples, srcs, windowMs }
+
+  function onShakeMotion(e) {
+    // NOTE: deliberately not gated on `busy`. `busy` is set for the whole duration of a
+    // capture (see onShakeAction), so gating here meant the recorder never received a
+    // single sample — every shake step failed with "未收到运动数据". `busy` exists to
+    // suppress preview repaints, not to close the data path.
+    if (!sensorActive) return;
+    const out = F.feedShakeMotion(e);
+    if (!out) return;
+    if (shakeRec.active) {
+      shakeRec.samples++;
+      shakeRec.srcs[out.source] = (shakeRec.srcs[out.source] || 0) + 1;
+      shakeRec.values.push(out.raw);
+    }
+    if (step === 2) {
+      elCcVal.textContent = String(out.pb);
+      elCcBar.style.width = (out.pb / 16383 * 100).toFixed(1) + '%';
+    }
+  }
+
+  function collectShake(ms) {
+    return new Promise((resolve) => {
+      shakeRec.active = true;
+      shakeRec.values = [];
+      shakeRec.samples = 0;
+      shakeRec.srcs = {};
+      shakeRec.t0 = performance.now();
+      setTimeout(() => {
+        shakeRec.active = false;
+        resolve({
+          values: shakeRec.values.slice(),
+          samples: shakeRec.samples,
+          srcs: { ...shakeRec.srcs },
+          elapsed: performance.now() - shakeRec.t0,
+        });
+      }, ms);
+    });
+  }
+
+  /** Step 1: hold still. The auto-zero absorbs the residual; we report what it saw. */
+  async function shakeConfirmZero() {
+    F.resetShakeRuntime();
+    const res = await collectShake(1800);
+    if (res.samples < 20) throw new Error('未收到运动数据（' + res.samples + ' 个样本），请重试');
+    const diag = F.getShakeDiagnostics();
+    const residual = Math.max(Math.abs(diag.bias.x), Math.abs(diag.bias.y));
+    shakeStep1 = { residual, source: diag.source, samples: res.samples };
+    showToast(cfg.minToast);
+    return shakeStep1;
+  }
+
+  /** Step 2: demonstrate full bend effort; keep the robust per-direction peaks. */
+  async function shakeCaptureEffort() {
+    showToast('开始晃动（5 秒）…');
+    const res = await collectShake(F.SHAKE_PEAK_MS);
+    if (res.samples < 60) throw new Error('样本太少（' + res.samples + '），请重试');
+    const robust = F.robustShakePeaks(res.values);
+    if (!robust) throw new Error('未能算出力度峰值，请重试');
+    const scaleNeg = Math.abs(robust.neg_trim);
+    const scalePos = robust.pos_trim;
+    if (!F.validShakeScale(scaleNeg) || !F.validShakeScale(scalePos)) {
+      throw new Error('力度跨度不足（−' + scaleNeg.toFixed(1) + ' / +' + scalePos.toFixed(1)
+        + ' m/s²），请向两侧加大晃动');
+    }
+    shakeStep2 = { robust, scaleNeg, scalePos, samples: res.samples, srcs: res.srcs, windowMs: res.elapsed };
+    showToast(cfg.maxToast);
+    return shakeStep2;
+  }
+
+  /**
+   * Step 3: save, then immediately replay one burst to prove the scale is reachable.
+   * Without this the user has no way to know the calibration actually matches their
+   * effort — the failure mode the archived sample showed (anchors 56 vs motion 20).
+   */
+  async function shakeFinishAndVerify() {
+    if (!shakeStep2) throw new Error('请先完成前两步');
+    F.saveFixedShakeScales(shakeStep2.scaleNeg, shakeStep2.scalePos, {
+      source: Object.keys(shakeStep2.srcs)[0] || null,
+      sources: shakeStep2.srcs,
+      robust: shakeStep2.robust,
+      windowMs: Math.round(shakeStep2.windowMs),
+    });
+    showToast('已保存，正在校验…');
+    const res = await collectShake(3000);
+    const robust = F.robustShakePeaks(res.values);
+    const diag = F.getShakeDiagnostics();
+    const achievedNeg = robust && diag.scaleNeg
+      ? Math.min(100, Math.round(100 * Math.abs(robust.neg_trim) / diag.scaleNeg)) : null;
+    const achievedPos = robust && diag.scalePos
+      ? Math.min(100, Math.round(100 * robust.pos_trim / diag.scalePos)) : null;
+    const worst = Math.min(achievedNeg == null ? 100 : achievedNeg, achievedPos == null ? 100 : achievedPos);
+    const summary = '校验：用到 −' + (achievedNeg == null ? '—' : achievedNeg + '%')
+      + ' / +' + (achievedPos == null ? '—' : achievedPos + '%');
+    if (worst < 80) {
+      showError(summary + '。刻度偏大：请点「上一步」重新演示更大的力度。');
+      return false;
+    }
+    showToast(summary);
+    return true;
+  }
 
   function showError(msg) {
     elError.textContent = msg || '';
@@ -112,7 +250,9 @@
       elBtnBack.style.display = 'none';
     } else {
       elBtnBack.style.display = '';
-      if (step === 2) {
+      if (isShake) {
+        elBtnBack.textContent = step === 2 ? '上一步：重新演示力度' : '上一步：重新确认零位';
+      } else if (step === 2) {
         elBtnBack.textContent = profileId === 'flip'
           ? '上一步：重新确认翻转极限'
           : '上一步：重新确认最高位置';
@@ -130,7 +270,7 @@
     });
 
     elPreviewBlock.classList.toggle('show', step === 2);
-    if (step === 2) updatePreview();
+    if (step === 2 && !isShake) updatePreview();
   }
 
   function updatePreview() {
@@ -166,10 +306,14 @@
     if (sensorActive) return;
     await F.requestProfilePermissions(profileId);
     F.resetFlipMotion();
+    if (isShake) F.resetShakeRuntime();
     sensorActive = true;
     window.addEventListener('deviceorientation', onOrientation, true);
     if (usesGravity) {
       window.addEventListener('devicemotion', onMotion, true);
+    }
+    if (isShake) {
+      window.addEventListener('devicemotion', onShakeMotion, true);
     }
   }
 
@@ -213,8 +357,44 @@
     }, 400);
   }
 
+  async function onShakeAction() {
+    const s = STEPS[step];
+    busy = true;
+    elBtnAction.disabled = true;
+    showError('');
+    try {
+      if (s.key === 'zero') {
+        const r = await shakeConfirmZero();
+        elStepDesc.textContent = '静止残余偏移 ' + r.residual.toFixed(2) + ' m/s²（'
+          + (r.source === 'gravity_delta' ? '重力估计路径' : '线性加速度') + '）。'
+          + '已把它作为零位，静止时弯音会停在中点。';
+        step = 1;
+        renderStep();
+      } else if (s.key === 'effort') {
+        const r = await shakeCaptureEffort();
+        elStepDesc.textContent = '力度刻度：−' + r.scaleNeg.toFixed(1) + ' / +' + r.scalePos.toFixed(1)
+          + ' m/s²（幅度上限 ' + r.robust.pos_max.toFixed(1) + '，已按稳健统计剔掉尖峰）。';
+        step = 2;
+        renderStep();
+      } else if (s.key === 'done') {
+        const ok = await shakeFinishAndVerify();
+        if (!ok) return;
+        setTimeout(() => window.location.replace('/?mode=' + returnMode), 700);
+      }
+    } catch (e) {
+      showError(e.message || '采样失败');
+    } finally {
+      busy = false;
+      elBtnAction.disabled = false;
+    }
+  }
+
   async function onAction() {
     await ensureSensor();
+    if (isShake) {
+      await onShakeAction();
+      return;
+    }
     const s = STEPS[step];
     if (s.key === 'min' || s.key === 'max') {
       await captureKey(s.key);

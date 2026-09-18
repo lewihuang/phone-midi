@@ -33,6 +33,7 @@
         "axis": "pitch"
       },
       "target": {
+        "type": "cc",
         "cc": 11,
         "channel": 0
       },
@@ -63,6 +64,7 @@
 | `source.type` | `"sensor"` \| `"touch"` | 源类型。Phase 1 仅 `sensor`，Phase 2 加 `touch` |
 | `source.sensor` | string | 传感器类型。MVP 用 `rotation_vector` |
 | `source.axis` | string | 轴名。`pitch` \| `roll` \| `yaw` \| `x` \| `y` \| `z` \| `magnitude` \| `value` |
+| `target.type` | `"cc"` \| `"pb"` | 目标类型。缺省 `"cc"`。`"pb"` 时输出 14-bit 弯音（`cc` 被忽略）。由 [ADR 0003](0003-explicit-target-kind.md) 增补；运行时消息的 `kind` 字段优先于此配置 |
 | `target.cc` | 0-127 | CC 编号 |
 | `target.channel` | 0-15 | MIDI 通道 |
 | `curve.type` | `"linear"` \| `"reverse"` \| `"logarithmic"` \| `"exponential"` | 映射曲线 |

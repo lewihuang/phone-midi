@@ -8,6 +8,7 @@
         "axis": "fused_lift"
       },
       "target": {
+        "type": "cc",
         "cc": 1,
         "channel": 0
       },

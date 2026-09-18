@@ -32,6 +32,13 @@
 
 默认 **endpoint_projection**。Mode B 运行时内置信号稳定（滑动平均 + 自适应平滑 + 发送迟滞），用户无感，参数见 `fusion.js` 内部 `FLIP_STABILIZER`。
 
+> ⚠️ **量纲注意（2026-09-17 修复）**：One Euro 的 `beta` 作用于归一化标量 `t ∈ [0,1]`，
+> 其量纲是「t 单位/秒」，快速翻转时最多约 10。历史上沿用像素量级输入的 `beta = 0.008`，
+> 使自适应项失效、截止频率被钉在 `mincutoff = 1 Hz`（时间常数 159 ms，t63 133 ms / t90 333 ms），
+> 是手感延迟的主因。现默认 `gravityAvgMs 20 / mincutoff 3.0 / beta 1.5`（t63 17 ms / t90 33 ms）。
+> 真机可在 `/latency.html` 实时调参并测量跨中点延迟。详见
+> [changelog 2026-09-17](../changelog/2026-09-17_latency-tuning.md)。
+
 ```
 ĝ → t_raw → t（稳定后）→ CC
 ```

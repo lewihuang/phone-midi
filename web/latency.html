@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>延迟诊断 — Phone MIDI CC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  body { padding: 16px 14px 48px; max-width: 460px; margin: 0 auto; }
+
+  .nav { font-size: 12px; color: #64748b; margin-bottom: 14px; line-height: 1.7; }
+  .nav a { color: #93c5fd; text-decoration: none; }
+
+  h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+  .sub { font-size: 12.5px; color: #94a3b8; line-height: 1.65; margin-bottom: 16px; }
+  .sub b { color: #e2e8f0; }
+
+  .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #7c3aed; color: #fff; }
+  .btn-primary:active { background: #6d28d9; }
+  .btn-primary:disabled { background: #334155; color: #64748b; }
+  .btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 8px; background: #334155; color: #cbd5e1; width: auto; }
+  .btn-sm:active { background: #475569; }
+  .row-btn { display: flex; gap: 8px; margin-top: 10px; }
+
+  .err { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 18px; }
+
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 14px 14px 12px; margin-top: 14px; }
+  .card h2 { font-size: 13.5px; font-weight: 700; color: #e2e8f0; margin-bottom: 4px; }
+  .card .hint { font-size: 11.5px; color: #64748b; line-height: 1.55; margin-bottom: 10px; }
+
+  table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.kv td { padding: 3px 0; vertical-align: baseline; }
+  table.kv td.k { color: #94a3b8; width: 52%; }
+  table.kv td.v { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-variant-numeric: tabular-nums; text-align: right; color: #e2e8f0; }
+  .v.good { color: #6ee7b7; }
+  .v.warn { color: #fcd34d; }
+  .v.bad  { color: #f87171; }
+  .v.dim  { color: #64748b; }
+
+  .slider-row { margin-top: 10px; }
+  .slider-row label { display: flex; justify-content: space-between; font-size: 12.5px; color: #94a3b8; margin-bottom: 4px; }
+  .slider-row label span.val { font-family: 'SF Mono', monospace; color: #e2e8f0; }
+  input[type=range] { width: 100%; accent-color: #8b5cf6; }
+
+  .bars { margin-top: 6px; }
+  .bar-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11.5px; color: #94a3b8; }
+  .bar-line .name { width: 46px; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0%; border-radius: 6px; }
+  .bar-fill.filt { background: linear-gradient(90deg, #7c3aed, #c084fc); }
+  .bar-fill.raw { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
+  .bar-line .num { width: 60px; text-align: right; font-family: 'SF Mono', monospace; color: #e2e8f0; }
+
+  .verdict { font-size: 12.5px; line-height: 1.7; color: #cbd5e1; background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .verdict b { color: #6ee7b7; }
+  .foot { font-size: 11px; color: #475569; text-align: center; margin-top: 18px; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/">← 主控制页</a> · <a href="/fusion-calibrate.html">Mode A 调试</a> ·
+  <a href="/fusion-calibrate-flip.html">Mode B 调试</a> · <a href="/fusion-calibrate-shake.html">Mode C 调试</a>
+</nav>
+
+<h1>延迟诊断</h1>
+<p class="sub">
+  把「坐在电脑边上感觉到的延迟」拆成可测量的四段：<b>传感器采样</b>（平台下限）、
+  <b>主线程</b>（代码开销）、<b>网络</b>（Bridge 往返）、<b>滤波链</b>（Mode B 手感）。
+  本页不连接 WebSocket、不发送 MIDI，仅读取 <code>/status</code> 测往返。
+</p>
+
+<button class="btn btn-primary" id="btnStart">启动传感器（需授权）</button>
+<p class="err" id="err"></p>
+
+<div class="card">
+  <h2>① 传感器采样 — 平台下限</h2>
+  <p class="hint">这是浏览器/系统能给的最快采样率，任何代码都无法超越。</p>
+  <table class="kv">
+    <tr><td class="k">deviceorientation 速率</td><td class="v" id="rateOri">—</td></tr>
+    <tr><td class="k">　事件间隔 p50 / p95</td><td class="v dim" id="rateOriIv">—</td></tr>
+    <tr><td class="k">devicemotion 速率</td><td class="v" id="rateMot">—</td></tr>
+    <tr><td class="k">　事件间隔 p50 / p95</td><td class="v dim" id="rateMotIv">—</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>② 主线程健康 — 代码开销</h2>
+  <p class="hint">事件从触发到被 JS 处理之间的排队时间；以及掉帧情况。数值大 = 主线程被拖住。</p>
+  <table class="kv">
+    <tr><td class="k">事件排队延迟 p50 / p95</td><td class="v" id="queueDelay">—</td></tr>
+    <tr><td class="k">渲染帧率</td><td class="v" id="fps">—</td></tr>
+    <tr><td class="k">最长帧（近 3 秒）</td><td class="v" id="longestFrame">—</td></tr>
+    <tr><td class="k">掉帧数 &gt;50ms</td><td class="v" id="jankCount">—</td></tr>
+    <tr><td class="k">localStorage 读取+解析</td><td class="v" id="storageCost">—</td></tr>
+  </table>
+  <div class="row-btn"><button class="btn btn-sm" id="btnStorage">测一次存储开销</button></div>
+</div>
+
+<div class="card">
+  <h2>③ 网络往返 — Bridge</h2>
+  <p class="hint">与你现在实际发送路径同一条 WiFi 链路（TCP 到 Bridge）。60 次取样。</p>
+  <table class="kv">
+    <tr><td class="k">min / p50 / p95</td><td class="v" id="rtt">—</td></tr>
+  </table>
+  <div class="row-btn"><button class="btn btn-sm" id="btnRtt">测网络往返</button></div>
+</div>
+
+<div class="card">
+  <h2>④ 滤波链延迟 — Mode B 手感</h2>
+  <p class="hint">
+    翻转手机几次，本页用<b>生产代码同一条链路</b>（<code>feedFlipMotion</code>）比较「未滤波的投影值」与
+    「实际发出的值」跨过中点的时刻差。这就是手上感觉到的滞后。
+  </p>
+  <table class="kv">
+    <tr><td class="k">实测跨中点延迟（中位）</td><td class="v" id="lagMeasured">—</td></tr>
+    <tr><td class="k">采样次数</td><td class="v dim" id="lagSamples">0</td></tr>
+    <tr><td class="k">当前参数静止时时间常数</td><td class="v" id="tauRest">—</td></tr>
+    <tr><td class="k">当前参数快速动作时</td><td class="v" id="tauFast">—</td></tr>
+    <tr><td class="k">锚点来源</td><td class="v dim" id="anchorSrc">—</td></tr>
+  </table>
+  <div class="bars">
+    <div class="bar-line"><span class="name">原值</span><span class="bar-track"><span class="bar-fill raw" id="barRaw"></span></span><span class="num" id="numRaw">—</span></div>
+    <div class="bar-line"><span class="name">实际</span><span class="bar-track"><span class="bar-fill filt" id="barFilt"></span></span><span class="num" id="numFilt">—</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>⑤ 调参（会立即影响主控制页）</h2>
+  <p class="hint">值越大越跟手、越小越平滑。改完回主控制页直接生效，无需重装。</p>
+  <div class="slider-row">
+    <label>静止平滑 mincutoff <span class="val" id="vMincut">—</span></label>
+    <input type="range" id="sMincut" min="0.2" max="12" step="0.1">
+  </div>
+  <div class="slider-row">
+    <label>动起来跟随 beta <span class="val" id="vBeta">—</span></label>
+    <input type="range" id="sBeta" min="0" max="8" step="0.1">
+  </div>
+  <div class="slider-row">
+    <label>重力滑动平均 gravityAvgMs <span class="val" id="vGrav">—</span></label>
+    <input type="range" id="sGrav" min="0" max="120" step="5">
+  </div>
+  <div class="row-btn">
+    <button class="btn btn-sm" id="btnDefaults">恢复默认</button>
+    <button class="btn btn-sm" id="btnPresets">载入「最跟手」</button>
+  </div>
+</div>
+
+<p class="verdict" id="verdict">
+  点上面的按钮启动传感器后，本页会持续给出四段延迟的实测值。
+</p>
+
+<p class="foot">
+  提示：本页与主控制页共享 <code>fusion.js</code> 的调参存储，调完即可回主页试手感。
+</p>
+
+<script src="fusion.js?v=16"></script>
+<script src="latency.js?v=1"></script>
+</body>
+</html>

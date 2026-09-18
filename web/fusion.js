@@ -8,13 +8,121 @@
   const MIN_SEP = 4;
   const MIN_SHAKE_SEP = 3;
 
-  /** Flip runtime stabilizer: A sliding avg (ms) + C One Euro on t */
-  const FLIP_STABILIZER = {
-    gravityAvgMs: 50,
-    oneEuro: { mincutoff: 1.0, beta: 0.008, dcutoff: 1.0 },
+  const FLIP_TUNING_KEY = 'phone-midi/tuning/flip/v1';
+
+  /**
+   * Flip runtime stabilizer: sliding avg (ms) on gravity + One Euro on t.
+   *
+   * NOTE ON UNITS: the One Euro filter runs on the normalised fusion scalar
+   * t ∈ [0,1], so `beta` is multiplied by |dt/dt| in *t-units per second*,
+   * which is at most ~10 even for a fast flip. The historical beta=0.008
+   * belongs to pixel/degree inputs (hundreds of units/s): the adaptive term
+   * was inert and the cutoff stayed pinned at mincutoff, i.e. a 159 ms time
+   * constant — the dominant source of hand-feel lag in Mode B.
+   * Defaults below give t63 ≈ 17 ms / t90 ≈ 33 ms on a step (retune at /latency.html).
+   */
+  const FLIP_STABILIZER_DEFAULTS = {
+    gravityAvgMs: 20,
+    mincutoff: 3.0,
+    beta: 1.5,
+    dcutoff: 1.0,
     sendMinDelta: 0.012,
     ccHysteresis: 0.5,
   };
+
+  const FLIP_STABILIZER = {
+    gravityAvgMs: FLIP_STABILIZER_DEFAULTS.gravityAvgMs,
+    oneEuro: {
+      mincutoff: FLIP_STABILIZER_DEFAULTS.mincutoff,
+      beta: FLIP_STABILIZER_DEFAULTS.beta,
+      dcutoff: FLIP_STABILIZER_DEFAULTS.dcutoff,
+    },
+    sendMinDelta: FLIP_STABILIZER_DEFAULTS.sendMinDelta,
+    ccHysteresis: FLIP_STABILIZER_DEFAULTS.ccHysteresis,
+  };
+
+  const FLIP_TUNING_LIMITS = {
+    gravityAvgMs: { min: 0, max: 120, step: 5 },
+    mincutoff: { min: 0.2, max: 12, step: 0.1 },
+    beta: { min: 0, max: 8, step: 0.1 },
+    dcutoff: { min: 0.2, max: 12, step: 0.1 },
+  };
+
+  function clampTo(key, v) {
+    const lim = FLIP_TUNING_LIMITS[key];
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    if (!lim) return n;
+    return Math.max(lim.min, Math.min(lim.max, n));
+  }
+
+  function getFlipTuning() {
+    return {
+      gravityAvgMs: FLIP_STABILIZER.gravityAvgMs,
+      mincutoff: FLIP_STABILIZER.oneEuro.mincutoff,
+      beta: FLIP_STABILIZER.oneEuro.beta,
+      dcutoff: FLIP_STABILIZER.oneEuro.dcutoff,
+      sendMinDelta: FLIP_STABILIZER.sendMinDelta,
+      ccHysteresis: FLIP_STABILIZER.ccHysteresis,
+    };
+  }
+
+  /** Mutates FLIP_STABILIZER in place so live references (oneEuroFilterT) pick it up. */
+  function applyFlipTuning(t) {
+    if (!t) return getFlipTuning();
+    const g = clampTo('gravityAvgMs', t.gravityAvgMs);
+    if (g != null) FLIP_STABILIZER.gravityAvgMs = g;
+    const mc = clampTo('mincutoff', t.mincutoff);
+    if (mc != null) FLIP_STABILIZER.oneEuro.mincutoff = mc;
+    const be = clampTo('beta', t.beta);
+    if (be != null) FLIP_STABILIZER.oneEuro.beta = be;
+    const dc = clampTo('dcutoff', t.dcutoff);
+    if (dc != null) FLIP_STABILIZER.oneEuro.dcutoff = dc;
+    if (typeof t.sendMinDelta === 'number' && t.sendMinDelta >= 0) {
+      FLIP_STABILIZER.sendMinDelta = t.sendMinDelta;
+    }
+    if (typeof t.ccHysteresis === 'number' && t.ccHysteresis >= 0) {
+      FLIP_STABILIZER.ccHysteresis = t.ccHysteresis;
+    }
+    return getFlipTuning();
+  }
+
+  function saveFlipTuning(t) {
+    const next = applyFlipTuning(t);
+    try {
+      localStorage.setItem(FLIP_TUNING_KEY, JSON.stringify(next));
+    } catch (_) { /* private mode: keep the in-memory value */ }
+    return next;
+  }
+
+  function resetFlipTuning() {
+    try {
+      localStorage.removeItem(FLIP_TUNING_KEY);
+    } catch (_) { /* ignore */ }
+    return applyFlipTuning(FLIP_STABILIZER_DEFAULTS);
+  }
+
+  function loadFlipTuning() {
+    try {
+      const raw = localStorage.getItem(FLIP_TUNING_KEY);
+      if (!raw) return getFlipTuning();
+      return applyFlipTuning(JSON.parse(raw));
+    } catch (_) {
+      return getFlipTuning();
+    }
+  }
+
+  /** Effective cutoff / time constant for a given |dt/dt| — used by /latency.html. */
+  function flipCutoffForSpeed(speed) {
+    return FLIP_STABILIZER.oneEuro.mincutoff
+      + FLIP_STABILIZER.oneEuro.beta * Math.abs(Number(speed) || 0);
+  }
+
+  function flipTimeConstantMs(speed) {
+    const cutoff = flipCutoffForSpeed(speed);
+    if (!(cutoff > 0)) return 0;
+    return 1000 / (2 * Math.PI * cutoff);
+  }
 
   const DEFAULT_FUSION = {
     mode: 'endpoint_projection',
@@ -49,7 +157,9 @@
       id: 'shake',
       modeId: 'C',
       input: 'motion',
-      storageKey: 'phone-midi/calibration/shake/v1',
+      // v2: the runtime calibration key. Holds either the wizard's pinned scales
+      // (`mode:'fixed'`) or the legacy v1 anchor shape written by the debug page.
+      storageKey: 'phone-midi/calibration/shake/v2',
       exportSchema: 'phone-midi/fusion-calibrate/shake/v1',
       axis: 'fused_shake',
       minLabel: '负向满弯音',
@@ -112,6 +222,13 @@
     return Math.max(lo, Math.min(hi, v));
   }
 
+  /** Quantile of an already-ascending-sorted array (nearest-rank). */
+  function quantileSorted(sorted, p) {
+    if (!sorted || !sorted.length) return null;
+    const i = clamp(Math.round((sorted.length - 1) * p), 0, sorted.length - 1);
+    return sorted[i];
+  }
+
   function getOrientationType() {
     if (screen.orientation && screen.orientation.type) return screen.orientation.type;
     return global.innerWidth > global.innerHeight ? 'landscape' : 'portrait';
@@ -165,10 +282,18 @@
   }
 
   function calibrationDataValid(profileId, data) {
-    if (!data || !data.anchors) return false;
+    if (!data) return false;
     const input = data.input || profileInput(profileId);
+    if (input === 'motion') {
+      // Two accepted shapes: the wizard's pinned scales (v2), or the debug page's
+      // v1 anchor peaks. Anything else is not a usable shake calibration.
+      if (data.mode === 'fixed'
+          && validShakeScale(Number(data.scale_neg))
+          && validShakeScale(Number(data.scale_pos))) return true;
+      return !!data.anchors && shakeAnchorsReady(data.anchors);
+    }
+    if (!data.anchors) return false;
     if (input === 'gravity') return gravityAnchorsReady(data.anchors);
-    if (input === 'motion') return shakeAnchorsReady(data.anchors);
     return anchorsReady(data.anchors);
   }
 
@@ -348,27 +473,32 @@
 
   /**
    * One-window bidirectional peak capture. Zero reference = absolute still (linear accel ≈ 0).
+   *
+   * Reports BOTH the raw extremes and robust quantiles. A single spike can otherwise
+   * define the whole scale — the archived sample `docs/json.json` has anchors at
+   * −52.4/+59.8 while its own trajectory never exceeds 20.2 m/s², and there was no way
+   * to tell which number was real. The robust figures make that decidable.
    */
   function captureShakePeaksBoth(windowMs, onTick) {
     const duration = typeof windowMs === 'number' ? windowMs : SHAKE_PEAK_MS;
     return new Promise((resolve, reject) => {
       const started = performance.now();
+      const values = [];
+      const srcCounts = {};
       let peakMin = Infinity;
       let peakMax = -Infinity;
-      let sampleCount = 0;
       let axisVoteX = 0;
       let axisVoteY = 0;
-      let source = null;
       const handler = (e) => {
         const sample = extractMotionDelta(e, null);
         if (!sample) return;
-        sampleCount++;
-        if (!source) source = sample.source;
+        srcCounts[sample.source] = (srcCounts[sample.source] || 0) + 1;
         const absX = Math.abs(sample.x);
         const absY = Math.abs(sample.y);
         if (absX >= absY) axisVoteX++;
         else axisVoteY++;
         const raw = absX >= absY ? sample.x : sample.y;
+        values.push(raw);
         peakMin = Math.min(peakMin, raw);
         peakMax = Math.max(peakMax, raw);
         if (onTick) {
@@ -378,13 +508,14 @@
             raw,
             span: peakMax - peakMin,
             elapsed: performance.now() - started,
-            sampleCount,
+            sampleCount: values.length,
           });
         }
       };
       global.addEventListener('devicemotion', handler, true);
       setTimeout(() => {
         global.removeEventListener('devicemotion', handler, true);
+        const sampleCount = values.length;
         if (sampleCount === 0) {
           reject(new Error('未收到晃动数据，请重试'));
           return;
@@ -394,29 +525,63 @@
           return;
         }
         const span = peakMax - peakMin;
-        if (span < MIN_SHAKE_SEP) {
-          reject(new Error('峰值跨度过小（' + span.toFixed(2) + ' m/s²），请向两侧加大晃动力度'));
+        const robust = robustShakePeaks(values);
+        const robustSpan = robust ? (robust.pos_trim - robust.neg_trim) : 0;
+        if (robustSpan < MIN_SHAKE_SEP) {
+          reject(new Error(
+            '稳健峰值跨度过小（' + robustSpan.toFixed(2) + ' m/s²，原始极值跨度 '
+            + span.toFixed(2) + '），请向两侧加大晃动力度'));
           return;
         }
         const capturedAt = new Date().toISOString();
+        const source = srcCounts.gravity_delta && !srcCounts.acceleration
+          ? 'gravity_delta'
+          : (srcCounts.acceleration ? 'acceleration' : null);
         resolve({
           min: {
             peak: Math.round(peakMin * 1000) / 1000,
+            peak_robust: Math.round(robust.neg_trim * 1000) / 1000,
             capturedAt,
             sampleCount,
           },
           max: {
             peak: Math.round(peakMax * 1000) / 1000,
+            peak_robust: Math.round(robust.pos_trim * 1000) / 1000,
             capturedAt,
             sampleCount,
           },
           primaryAxis: axisVoteX >= axisVoteY ? 'x' : 'y',
           source,
+          sources: srcCounts,
           windowMs: duration,
           peak_span: Math.round(span * 1000) / 1000,
+          robust,
+          robust_span: Math.round(robustSpan * 1000) / 1000,
         });
       }, duration);
     });
+  }
+
+  /** Robust per-direction saturation estimate; ignores single-sample spikes. */
+  function robustShakePeaks(values) {
+    if (!values || !values.length) return null;
+    const sorted = values.slice().sort((a, b) => a - b);
+    const negatives = sorted.filter((v) => v < 0);   // ascending: most negative first
+    const positives = sorted.filter((v) => v > 0);   // ascending: most positive last
+    const absSorted = values.map((v) => Math.abs(v)).sort((a, b) => a - b);
+    return {
+      // Per-direction "high effort" magnitude with the most extreme 10 % trimmed:
+      // robust to a single spike, yet still reflects how hard the user really shook.
+      // Computed per direction (not as p05/p95 of the whole series) so an asymmetric
+      // or time-skewed shake cannot collapse one side to ~0.
+      neg_trim: negatives.length ? quantileSorted(negatives, 0.10) : sorted[0],
+      pos_trim: positives.length ? quantileSorted(positives, 0.90) : sorted[sorted.length - 1],
+      neg_min: sorted[0],
+      pos_max: sorted[sorted.length - 1],
+      abs_p50: quantileSorted(absSorted, 0.5),
+      abs_p95: quantileSorted(absSorted, 0.95),
+      sample_count: values.length,
+    };
   }
 
   function loadCalibration(profile) {
@@ -757,6 +922,516 @@
     return FLIP_STABILIZER.gravityAvgMs;
   }
 
+  // ── Mode C: shake → pitch bend runtime ─────────────────────────────────────
+  //
+  // Design: docs/spec/mode-c-shake.md. Three properties drive this code:
+  //  1. The control variable is instantaneous *linear* acceleration, so stopping the
+  //     shake physically re-centres the bend. There is deliberately NO hard re-centre
+  //     rule (10.1) — which makes an exact zero point the single point of failure.
+  //  2. Therefore: a slowly tracked bias (auto-zero) plus, on devices that lack
+  //     `event.acceleration`, a high-pass gravity estimate. Without those, "at rest"
+  //     is not zero and the instrument sits detuned instead of merely feeling off.
+  //  3. Full bend (`scale`, m/s²) is adaptive by default and can be pinned by the
+  //     optional wizard. It is persisted per screen orientation as a *prior* (P2).
+
+  const SHAKE_TUNING_KEY = 'phone-midi/tuning/shake/v1';
+  const SHAKE_SCALES_KEY = PROFILES.shake.storageKey;
+  const SHAKE_MIN_SCALE = 3;
+
+  const SHAKE_TUNING_DEFAULTS = {
+    bendRange: 0.5,          // output excursion: PB = 8192 ± bendRange·8192
+    deadbandCounts: 30,      // centre deadband, counted in PB counts
+    minStepCounts: 4,        // send when |ΔPB| >= this
+    axisMode: 'auto',        // 'auto' | 'x' | 'y'
+    // Fixed full-bend amplitude, m/s². A shake of this size drives the bend to its
+    // configured limit (bendRange); anything gentler scales down proportionally, so the
+    // hand fully determines the output. Deliberately NOT adaptive: an estimator that
+    // re-normalises to the user's habitual effort severs the link between how hard you
+    // shake and how far the bend goes, which is the whole point of an instrument.
+    // 80 rather than 40 because real-device feedback showed ordinary shaking already
+    // reaching ~40 m/s², i.e. the default saturated on normal playing.
+    fixedScale: 80,
+    gravityCutoffHz: 0.3,    // fallback path: high-pass estimate of linear accel
+    biasTauSec: 3.0,         // how fast the zero point tracks while stationary
+    stillThreshold: 1.2,     // m/s² below which we call it stationary
+    stillSamples: 12,
+    measureWindowMs: 3000,   // rolling window for the "how hard are you shaking" readout
+    // Deliberately transparent: the mapping must stay proportional to the hand, and a
+    // One Euro filter tightens its cutoff exactly where the waveform peaks (derivative
+    // ≈ 0), which rounds off the top of the travel. Measured peak loss: 2.3% at
+    // mincutoff 6 / beta 1.2 versus 1.0% here. Rest jitter is handled by the count-space
+    // deadband instead, so a high mincutoff costs nothing.
+    oneEuro: { mincutoff: 12.0, beta: 3.0, dcutoff: 1.0 },
+  };
+
+  const SHAKE_TUNING_LIMITS = {
+    bendRange: { min: 0.05, max: 1.0, step: 0.05 },
+    deadbandCounts: { min: 0, max: 400, step: 10 },
+    minStepCounts: { min: 1, max: 64, step: 1 },
+    fixedScale: { min: 3, max: 400, step: 1 },
+    stillThreshold: { min: 0.2, max: 6, step: 0.1 },
+  };
+
+  const _shakeTuning = { ...SHAKE_TUNING_DEFAULTS, oneEuro: { ...SHAKE_TUNING_DEFAULTS.oneEuro } };
+
+  function clampShakeValue(key, v) {
+    const lim = SHAKE_TUNING_LIMITS[key];
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    if (!lim) return n;
+    return Math.max(lim.min, Math.min(lim.max, n));
+  }
+
+  function getShakeTuning() {
+    return { ..._shakeTuning, oneEuro: { ..._shakeTuning.oneEuro } };
+  }
+
+  /** Mutates _shakeTuning in place so live readers (feedShakeMotion) pick changes up. */
+  function applyShakeTuning(t) {
+    if (!t) return getShakeTuning();
+    for (const key of Object.keys(SHAKE_TUNING_LIMITS)) {
+      if (t[key] === undefined) continue;
+      const v = clampShakeValue(key, t[key]);
+      if (v != null) _shakeTuning[key] = v;
+    }
+    if (t.axisMode === 'auto' || t.axisMode === 'x' || t.axisMode === 'y') {
+      _shakeTuning.axisMode = t.axisMode;
+    }
+    if (t.oneEuro) {
+      for (const k of ['mincutoff', 'beta', 'dcutoff']) {
+        const v = Number(t.oneEuro[k]);
+        if (Number.isFinite(v) && v >= 0) _shakeTuning.oneEuro[k] = v;
+      }
+    }
+    return getShakeTuning();
+  }
+
+  function setShakeTuning(t) {
+    const next = applyShakeTuning(t);
+    try {
+      localStorage.setItem(SHAKE_TUNING_KEY, JSON.stringify(next));
+    } catch (_) { /* private mode: keep the in-memory value */ }
+    return next;
+  }
+
+  function resetShakeTuning() {
+    try { localStorage.removeItem(SHAKE_TUNING_KEY); } catch (_) { /* ignore */ }
+    return applyShakeTuning(SHAKE_TUNING_DEFAULTS);
+  }
+
+  function loadShakeTuning() {
+    try {
+      const raw = localStorage.getItem(SHAKE_TUNING_KEY);
+      if (!raw) return getShakeTuning();
+      return applyShakeTuning(JSON.parse(raw));
+    } catch (_) {
+      return getShakeTuning();
+    }
+  }
+
+  function oneEuroStep(euro, value, dt, cfg) {
+    if (euro.x == null || Number.isNaN(euro.x)) {
+      euro.x = value; euro.dx = 0;
+      return value;
+    }
+    const dtSafe = Math.max(dt, 1e-4);
+    const edx = (value - euro.x) / dtSafe;
+    const aD = lowPassAlpha(cfg.dcutoff, dtSafe);
+    euro.dx = aD * edx + (1 - aD) * euro.dx;
+    const cutoff = cfg.mincutoff + cfg.beta * Math.abs(euro.dx);
+    const a = lowPassAlpha(cutoff, dtSafe);
+    euro.x = a * value + (1 - a) * euro.x;
+    return euro.x;
+  }
+
+  function createShakeRuntime() {
+    return {
+      startedAt: performance.now(),
+      lastTime: null,
+      sampleCount: 0,
+      // fallback path state
+      gravity: { x: 0, y: 0, z: 0, init: false },
+      srcCounts: { acceleration: 0, gravity_delta: 0 },
+      lastSource: null,
+      // zero point
+      bias: { x: 0, y: 0, z: 0 },
+      stillCount: 0,
+      stationary: true,
+      // axis
+      axis: 'x',
+      vote: { x: 0, y: 0 },
+      voteWindow: [],
+      // scale: fixed amplitude for full bend, from the wizard calibration when present,
+      // otherwise from tuning.fixedScale. Never estimated at runtime.
+      scaleNeg: null,
+      scalePos: null,
+      scaleMode: 'fixed',
+      cal: null,
+      // Rolling measurements for the UI. They are *display only* — they never feed back
+      // into the mapping, which is what keeps shake → bend strictly proportional.
+      measureWindow: [],
+      motionMaxNeg: null,
+      motionMaxPos: null,
+      motionP95Neg: null,
+      motionP95Pos: null,
+      // Rolling "how much of the bend range is this motion actually using".
+      usageWindow: [],
+      // output
+      euro: { x: null, dx: 0 },
+      lastU: null,
+      lastRaw: null,
+      lastPb: null,
+      // diagnostics for acceptance A1/A9/A10
+      staticLog: [],
+      motionSeen: false,
+      stillSince: null,
+      recenterMs: null,
+    };
+  }
+
+  let _shakeRuntime = createShakeRuntime();
+
+  function shakeRuntime() {
+    return _shakeRuntime;
+  }
+
+  /**
+   * Full reset, e.g. when (re)entering Mode C. The wizard calibration is re-read eagerly
+   * so a value saved on another page is picked up, and the state is inspectable
+   * immediately after the reset.
+   */
+  function resetShakeRuntime() {
+    _shakeRuntime = createShakeRuntime();
+    _shakeRuntime.cal = loadFixedShakeScales();
+  }
+
+  /** Wizard result: pin both directions. Overrides tuning.fixedScale when present. */
+  function loadFixedShakeScales() {
+    try {
+      const raw = localStorage.getItem(SHAKE_SCALES_KEY) || sessionStorage.getItem(SHAKE_SCALES_KEY);
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      const neg = Number(d.scale_neg);
+      const pos = Number(d.scale_pos);
+      if (d.mode !== 'fixed' || !validShakeScale(neg) || !validShakeScale(pos)) return null;
+      return {
+        mode: 'fixed',
+        scale_neg: neg,
+        scale_pos: pos,
+        calibratedAt: d.calibratedAt || null,
+        source: d.source || null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function validShakeScale(v) {
+    return Number.isFinite(v) && v >= SHAKE_MIN_SCALE && v <= 400;
+  }
+
+  function saveFixedShakeScales(scaleNeg, scalePos, extras) {
+    if (!validShakeScale(scaleNeg) || !validShakeScale(scalePos)) {
+      throw new Error('力度刻度无效（需要 3–400 m/s² 两个方向的值）');
+    }
+    const data = {
+      schema: SHAKE_SCALES_KEY,
+      profile: 'shake',
+      mode: 'fixed',
+      input: 'motion',
+      scale_neg: Math.round(scaleNeg * 100) / 100,
+      scale_pos: Math.round(scalePos * 100) / 100,
+      source: (extras && extras.source) || null,
+      sources: (extras && extras.sources) || null,
+      robust: (extras && extras.robust) || null,
+      windowMs: (extras && extras.windowMs) || null,
+      orientation: getOrientationType(),
+      calibratedAt: new Date().toISOString(),
+    };
+    try {
+      const json = JSON.stringify(data);
+      localStorage.setItem(SHAKE_SCALES_KEY, json);
+      sessionStorage.setItem(SHAKE_SCALES_KEY, json);
+    } catch (e) {
+      throw new Error('无法写入本地存储：' + (e.message || '请检查浏览器权限'));
+    }
+    resetShakeRuntime();
+    return data;
+  }
+
+  function clearFixedShakeScales() {
+    try {
+      localStorage.removeItem(SHAKE_SCALES_KEY);
+      sessionStorage.removeItem(SHAKE_SCALES_KEY);
+    } catch (_) { /* ignore */ }
+    resetShakeRuntime();
+  }
+
+  /**
+   * Linear acceleration.
+   *  - `event.acceleration` is already gravity-free → use it verbatim.
+   *  - Otherwise subtract a slow gravity estimate from `accelerationIncludingGravity`.
+   *    Using the raw including-gravity vector here (the old behaviour) leaves a
+   *    constant ~9.8 m/s² offset, i.e. a permanently detuned instrument at rest.
+   */
+  function extractLinearAcceleration(state, event, tuning, dt) {
+    const lin = event.acceleration;
+    if (lin && lin.x != null) {
+      state.srcCounts.acceleration++;
+      state.lastSource = 'acceleration';
+      return { x: lin.x, y: lin.y, z: lin.z };
+    }
+    const raw = event.accelerationIncludingGravity;
+    if (!raw || raw.x == null) return null;
+    state.srcCounts.gravity_delta++;
+    state.lastSource = 'gravity_delta';
+    if (!state.gravity.init) {
+      state.gravity = { x: raw.x, y: raw.y, z: raw.z, init: true };
+    } else {
+      const a = lowPassAlpha(tuning.gravityCutoffHz, dt);
+      state.gravity.x = a * raw.x + (1 - a) * state.gravity.x;
+      state.gravity.y = a * raw.y + (1 - a) * state.gravity.y;
+      state.gravity.z = a * raw.z + (1 - a) * state.gravity.z;
+    }
+    return { x: raw.x - state.gravity.x, y: raw.y - state.gravity.y, z: raw.z - state.gravity.z };
+  }
+
+  /**
+   * Stationarity + auto-zero. Both are evaluated on the *uncorrected* linear
+   * acceleration: unlike the residual, its magnitude is independent of the current
+   * bias estimate, so a bad bias cannot deadlock the update.
+   */
+  function updateZeroPoint(state, a, tuning, dt) {
+    const mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    if (mag < tuning.stillThreshold) state.stillCount++;
+    else state.stillCount = 0;
+    const wasStationary = state.stationary;
+    state.stationary = state.stillCount >= tuning.stillSamples;
+    if (state.stationary) {
+      const alpha = 1 - Math.exp(-dt / Math.max(tuning.biasTauSec, 1e-3));
+      state.bias.x += alpha * (a.x - state.bias.x);
+      state.bias.y += alpha * (a.y - state.bias.y);
+      state.bias.z += alpha * (a.z - state.bias.z);
+    }
+    return { mag, becameStationary: state.stationary && !wasStationary };
+  }
+
+  /**
+   * Axis energy vote over the last 2 s, applied only while stationary: at rest the
+   * bend is centred, so switching then is invisible; switching mid-shake would jump.
+   *
+   * Two guards matter here, both learned the hard way:
+   *  1. Only samples that carry real motion are recorded. Recording near-zero residual
+   *     samples let *floating-point noise* decide the axis — on the gravity-fallback
+   *     path that pinned the axis to `y` and produced no bend at all until the next
+   *     shake.
+   *  2. A clear winner (1.3×) is required, otherwise the current axis is kept.
+   */
+  function updateAxisVote(state, corr, tuning, dt, stationary) {
+    if (tuning.axisMode === 'x' || tuning.axisMode === 'y') {
+      state.axis = tuning.axisMode;
+      return;
+    }
+    const now = performance.now();
+    const ax = Math.abs(corr.x);
+    const ay = Math.abs(corr.y);
+    const mag = ax + ay;
+    const moved = mag > tuning.stillThreshold;
+
+    if (!stationary && moved) {
+      state.voteWindow.push({ t: now, x: ax, y: ay });
+    }
+    while (state.voteWindow.length && state.voteWindow[0].t < now - 2000) state.voteWindow.shift();
+
+    if (stationary) {
+      // Decide from the last burst of movement.
+      if (!state.voteWindow.length) return;
+      let sx = 0; let sy = 0;
+      for (const s of state.voteWindow) { sx += s.x; sy += s.y; }
+      state.vote = { x: sx, y: sy };
+      if (sx >= sy * 1.3) state.axis = 'x';
+      else if (sy >= sx * 1.3) state.axis = 'y';
+      return;
+    }
+
+    // Rescue while shaking: switch only when the current axis is dead and the other
+    // one clearly carries the motion. The output is centred in that case anyway, so
+    // the switch cannot produce a jump.
+    const cur = state.axis === 'x' ? ax : ay;
+    const other = state.axis === 'x' ? ay : ax;
+    if (cur < tuning.stillThreshold && other > cur * 3) {
+      state.axis = state.axis === 'x' ? 'y' : 'x';
+    }
+  }
+
+  /**
+   * Rolling measurements of how hard the user is actually shaking, for the UI only.
+   * Displayed so the fixed full-bend amplitude can be set from observation instead of
+   * guesswork ("shake normally, read the peak, set the value"). Never used as a scale.
+   */
+  function measureMotion(state, value, now, tuning) {
+    state.measureWindow.push({ t: now, v: value });
+    while (state.measureWindow.length && state.measureWindow[0].t < now - tuning.measureWindowMs) {
+      state.measureWindow.shift();
+    }
+    const pos = state.measureWindow.filter((s) => s.v > 0).map((s) => s.v).sort((a, b) => a - b);
+    const neg = state.measureWindow.filter((s) => s.v < 0).map((s) => -s.v).sort((a, b) => a - b);
+    if (pos.length) {
+      state.motionMaxPos = pos[pos.length - 1];
+      state.motionP95Pos = quantileSorted(pos, 0.95);
+    }
+    if (neg.length) {
+      state.motionMaxNeg = neg[neg.length - 1];
+      state.motionP95Neg = quantileSorted(neg, 0.95);
+    }
+  }
+
+  /** u ∈ [−1,1] → PB counts, with the centre deadband applied in count space. */
+  function shakeUToPb(u, tuning) {
+    const t = tuning || getShakeTuning();
+    const excursion = clamp(u, -1, 1) * t.bendRange * 8192;
+    if (Math.abs(excursion) < t.deadbandCounts) return 8192;
+    return Math.max(0, Math.min(16383, Math.round(8192 + excursion)));
+  }
+
+  /**
+   * Mode C production path.
+   * Returns null until sensor data arrives, otherwise the full diagnostic record so
+   * the UI (and /fusion-calibrate-shake.html) can show what the runtime is doing.
+   */
+  function feedShakeMotion(event, opts) {
+    const tuning = getShakeTuning();
+    const state = shakeRuntime();
+    const now = performance.now();
+    const dt = state.lastTime != null
+      ? Math.min(0.2, Math.max(0.001, (now - state.lastTime) / 1000))
+      : 1 / 60;
+    state.lastTime = now;
+
+    const a = extractLinearAcceleration(state, event, tuning, dt);
+    if (!a) return null;
+    state.sampleCount++;
+    state.lastDt = dt;
+
+    const { becameStationary } = updateZeroPoint(state, a, tuning, dt);
+    const corr = { x: a.x - state.bias.x, y: a.y - state.bias.y, z: a.z - state.bias.z };
+    updateAxisVote(state, corr, tuning, dt, state.stationary);
+    const raw = state.axis === 'x' ? corr.x : corr.y;
+
+    // Fixed mapping: the amplitude demonstrated in the wizard when available, otherwise
+    // the user-set full-bend amplitude. No runtime estimation — the bend is a pure
+    // function of how hard the phone is being shaken.
+    if (state.cal == null) state.cal = loadFixedShakeScales();
+    const scaleNeg = state.cal ? state.cal.scale_neg : tuning.fixedScale;
+    const scalePos = state.cal ? state.cal.scale_pos : tuning.fixedScale;
+    state.scaleNeg = scaleNeg;
+    state.scalePos = scalePos;
+    state.scaleMode = state.cal ? 'calibrated' : 'fixed';
+
+    const scale = raw >= 0 ? scalePos : scaleNeg;
+    const uRaw = scale > 0 ? clamp(raw / scale, -1, 1) : 0;
+    const u = clamp(oneEuroStep(state.euro, uRaw, dt, tuning.oneEuro), -1, 1);
+    const pb = shakeUToPb(u, tuning);
+
+    state.lastRaw = raw;
+    state.lastU = u;
+    state.lastPb = pb;
+    measureMotion(state, raw, now, tuning);
+
+    state.usageWindow.push({ t: now, a: Math.abs(u) });
+    while (state.usageWindow.length && state.usageWindow[0].t < now - 3000) state.usageWindow.shift();
+    let usage = 0;
+    for (const e of state.usageWindow) { if (e.a > usage) usage = e.a; }
+
+    // A10: how long after motion stops the bend is back within 16 counts of centre.
+    if (!state.stationary) {
+      state.motionSeen = true;
+      state.stillSince = null;
+    } else if (state.motionSeen && state.stillSince == null) {
+      state.stillSince = now;
+    }
+    if (state.stillSince != null && Math.abs(pb - 8192) <= 16) {
+      state.recenterMs = now - state.stillSince;
+      state.motionSeen = false;
+      state.stillSince = null;
+    }
+
+    // A1/A9: distribution of the static offset over a rolling 60 s.
+    if (state.stationary) {
+      state.staticLog.push({ t: now, off: Math.abs(pb - 8192) });
+      while (state.staticLog.length && state.staticLog[0].t < now - 60000) state.staticLog.shift();
+    }
+
+    return {
+      pb,
+      t: (u + 1) / 2,
+      u,
+      u_raw: uRaw,
+      raw,
+      dt,
+      axis: state.axis,
+      source: state.lastSource,
+      degraded: state.lastSource === 'gravity_delta',
+      stationary: state.stationary,
+      becameStationary,
+      scaleNeg: state.scaleNeg,
+      scalePos: state.scalePos,
+      scaleMode: state.scaleMode,
+      bendRange: tuning.bendRange,
+      usage,
+      usagePct: Math.round(usage * 100),
+      inDeadband: pb === 8192,
+      bias: { ...state.bias },
+    };
+  }
+
+  /** Snapshot for the diagnostic UI (A1/A9/A10 numbers included). */
+  function getShakeDiagnostics() {
+    const s = shakeRuntime();
+    const offsets = s.staticLog.map((e) => e.off);
+    const spanMs = s.staticLog.length > 1
+      ? s.staticLog[s.staticLog.length - 1].t - s.staticLog[0].t
+      : 0;
+    return {
+      samples: s.sampleCount,
+      axis: s.axis,
+      axisMode: _shakeTuning.axisMode,
+      source: s.lastSource,
+      degraded: s.lastSource === 'gravity_delta',
+      srcCounts: { ...s.srcCounts },
+      stationary: s.stationary,
+      bias: { ...s.bias },
+      gravityEstimate: { ...s.gravity },
+      lastDt: s.lastTime != null && s.lastDt != null ? s.lastDt : null,
+      scaleNeg: s.scaleNeg,
+      scalePos: s.scalePos,
+      scaleMode: s.scaleMode,
+      fixedScale: _shakeTuning.fixedScale,
+      calibrated: s.cal != null,
+      // Measured motion (display only, never fed back into the mapping).
+      motionMaxNeg: s.motionMaxNeg,
+      motionMaxPos: s.motionMaxPos,
+      motionP95Neg: s.motionP95Neg,
+      motionP95Pos: s.motionP95Pos,
+      lastRaw: s.lastRaw,
+      lastU: s.lastU,
+      lastPb: s.lastPb,
+      // Usage over the last 3 s: "how much of the bend range is this using".
+      usagePct: Math.round((s.usageWindow.reduce((m, e) => Math.max(m, e.a), 0)) * 100),
+      bendRange: _shakeTuning.bendRange,
+      // A1 / A9
+      staticSamples: offsets.length,
+      staticSpanMs: Math.round(spanMs),
+      staticMaxOffset: offsets.length ? Math.max.apply(null, offsets) : null,
+      staticMeanOffset: offsets.length
+        ? Math.round((offsets.reduce((a, b) => a + b, 0) / offsets.length) * 10) / 10
+        : null,
+      // A10
+      recenterMs: s.recenterMs != null ? Math.round(s.recenterMs) : null,
+      fastWindowMs: Math.max(0, Math.round(_shakeTuning.adaptiveFastMs - (performance.now() - s.startedAt))),
+    };
+  }
+
   function buildExportJson(profile, anchors, fusion, extras) {
     const p = resolveProfile(profile);
     const isGravity = p.input === 'gravity';
@@ -790,8 +1465,13 @@
         ? {
           sensor: 'accelerometer',
           axis: p.axis,
+          kind: 'pb',
+          value_kind: 'bipolar',
           value_range: [0.0, 1.0],
-          notes: 'Phone computes fused t from shake peaks; Bridge maps t→Pitch Bend (0.5=center)',
+          bend_range: getShakeTuning().bendRange,
+          notes: 'Phone computes fused t from shake peaks; Bridge maps t→Pitch Bend (0.5=center). '
+            + 'kind/value_kind are explicit since ADR 0003 — the Bridge no longer infers the '
+            + 'target type from sensor/axis.',
         }
         : {
           sensor: isGravity ? 'accelerometer' : 'rotation_vector',
@@ -807,6 +1487,15 @@
       if (anchors.min) out.anchors.min = { ...anchors.min };
       if (anchors.max) out.anchors.max = { ...anchors.max };
       if (anchors.primaryAxis) out.anchors.primaryAxis = anchors.primaryAxis;
+      // A8: the export must be able to prove itself. Without `source` the archived
+      // sample cannot tell a real linear-acceleration capture from the
+      // gravity-subtracted fallback, and without quantiles a single spike cannot be
+      // told apart from a genuine full-effort shake.
+      out.source = anchors.source || null;
+      out.sources = anchors.sources || null;
+      out.robust = anchors.robust || null;
+      out.robust_span = anchors.robust_span != null ? anchors.robust_span : null;
+      out.window_ms = anchors.windowMs != null ? anchors.windowMs : null;
     } else {
       if (anchors.min) out.anchors.min = { ...anchors.min };
       if (anchors.max) out.anchors.max = { ...anchors.max };
@@ -822,6 +1511,11 @@
     return out;
   }
 
+  // Persisted Mode B tuning must be in effect before any fusion call.
+  loadFlipTuning();
+  // Same for Mode C: bendRange and friends are user-tunable and persisted.
+  loadShakeTuning();
+
   global.PhoneMidiFusion = {
     LEGACY_STORAGE_KEY,
     STORAGE_KEY,
@@ -832,6 +1526,35 @@
     MIN_SEP,
     MIN_SHAKE_SEP,
     DEFAULT_FUSION,
+    // ── Mode C runtime (ADR 0003 + spec/mode-c-shake.md) ──
+    SHAKE_TUNING_KEY,
+    SHAKE_SCALES_KEY,
+    SHAKE_TUNING_DEFAULTS,
+    SHAKE_TUNING_LIMITS,
+    getShakeTuning,
+    setShakeTuning,
+    resetShakeTuning,
+    loadShakeTuning,
+    shakeUToPb,
+    feedShakeMotion,
+    resetShakeRuntime,
+    getShakeDiagnostics,
+    loadFixedShakeScales,
+    saveFixedShakeScales,
+    clearFixedShakeScales,
+    validShakeScale,
+    robustShakePeaks,
+    quantileSorted,
+    // ── Mode B tuning ──
+    FLIP_TUNING_KEY,
+    FLIP_TUNING_LIMITS,
+    FLIP_STABILIZER_DEFAULTS,
+    getFlipTuning,
+    setFlipTuning: saveFlipTuning,
+    resetFlipTuning,
+    loadFlipTuning,
+    flipCutoffForSpeed,
+    flipTimeConstantMs,
     clamp,
     normalize3,
     getOrientationType,
