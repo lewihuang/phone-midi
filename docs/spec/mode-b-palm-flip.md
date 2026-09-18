@@ -1,7 +1,7 @@
 # Mode B 翻转手掌 — 方案与步骤分解
 
-> 状态：Phase 1–5 已实现；**融合源已改为重力向量**（2026-07-09）  
-> 创建：2026-07-09  
+> 状态：Phase 1–8 已实现；**融合源已改为姿态推导的重力向量**（2026-09-18）
+> 创建：2026-07-09
 > 关联：[ui-mode-centric.md](ui-mode-centric.md)、[mode-a-pose-debug.md](mode-a-pose-debug.md)
 
 ---
@@ -13,7 +13,8 @@
 | 动作 | 抬/降手臂 | **固定肘部，腕部翻转手掌** |
 | MIN (0) | 自然垂手 | 自然握姿（掌心朝自己） |
 | MAX (127) | 抬手最高 | 翻转极限 |
-| 融合输入 | `deviceorientation` (β, γ) | **`devicemotion` 重力向量** |
+| 融合输入 | `deviceorientation` (β, γ) | `deviceorientation` (β, γ) → 重力向量 |
+| 运行时链路 | 投影，无状态 | 投影，无状态（与 A 相同） |
 | Bridge axis | `fused_lift` | `fused_flip` |
 | 校准 storage | `phone-midi/calibration/lift/v1` | `phone-midi/calibration/flip/v1` |
 | 用户校准页 | `/calibrate-lift.html` | `/calibrate-flip.html` |
@@ -22,28 +23,36 @@
 
 ---
 
-## 2. 融合模型（重力向量）
+## 2. 融合模型（姿态 → 重力向量）
 
-### 2.1 为何不用 β/γ
+### 2.1 为何不是 β/γ 直接投影，也不是加速度计
 
-翻转动作常经过 **γ ≈ ±90°** 欧拉奇异区，β/γ 端点投影会出现 **fused_t 阶跃**（真机样本 `docs/json.json` 已复现）。用户习惯操作无法稳定避开该区间。
+- **不用 β/γ 端点投影**：翻转动作常经过 **γ ≈ ±90°** 欧拉奇异区，把 (β, γ) 当二维点做投影会出现 **fused_t 阶跃**（真机样本 `docs/json.json` 已复现）。
+- **不用加速度计估重力**：`accelerationIncludingGravity` 里混着手部线加速度。按刚体绕腕旋转建模，300 ms 快速翻转的线加速度峰值约 **33 m/s²（3.4 g）**，会把「重力方向」拧偏几十度（实测模型下 76–84 CC 步 RMS 误差），而且与手势**同频段**，滤波无法分离——只能换来 20–35 ms 的群延迟（静止时间常数 53 ms）。
 
 ### 2.2 算法
 
-默认 **endpoint_projection**。Mode B 运行时内置信号稳定（滑动平均 + 自适应平滑 + 发送迟滞），用户无感，参数见 `fusion.js` 内部 `FLIP_STABILIZER`。
+姿态 → 设备坐标系中的重力方向 → 对校准锚点做 endpoint projection。**链路上没有任何平滑/平均/迟滞**，与 Mode A 完全同构。
 
-> ⚠️ **量纲注意（2026-09-17 修复）**：One Euro 的 `beta` 作用于归一化标量 `t ∈ [0,1]`，
-> 其量纲是「t 单位/秒」，快速翻转时最多约 10。历史上沿用像素量级输入的 `beta = 0.008`，
-> 使自适应项失效、截止频率被钉在 `mincutoff = 1 Hz`（时间常数 159 ms，t63 133 ms / t90 333 ms），
-> 是手感延迟的主因。现默认 `gravityAvgMs 20 / mincutoff 3.0 / beta 1.5`（t63 17 ms / t90 33 ms）。
-> 真机可在 `/latency.html` 实时调参并测量跨中点延迟。详见
-> [changelog 2026-09-17](../changelog/2026-09-17_latency-tuning.md)。
+由 W3C `deviceorientation` 的 Z-X'-Y'' 旋转矩阵 `R = Rz(α)Rx(β)Ry(γ)`，设备坐标系下的重力方向是 `R^T·ẑ`，即 R 的第三行：
 
 ```
-ĝ → t_raw → t（稳定后）→ CC
+u = (−cosβ·sinγ,  sinβ,  cosβ·cosγ)
 ```
 
-β/γ 仅调试页参考，不参与融合。
+- **与 α 无关**（偏航不影响重力方向）；
+- 在 **β = ±90° 处连续**：此处 cosβ = 0，病态的 γ 自动消失——旧方案的奇异区问题对向量形式不存在；
+- 水平放置时 u = (0,0,1)，与加速度计的「向上」约定一致。
+
+```
+(β, γ) → u → 投影到 [min, max] → t → CC
+```
+
+**迟滞与阈值只在发送侧**：`app.js` 的 `emitValue()` 以「变化 ≥ 1 CC 步（0.008）」为唯一条件（另加 4 ms 高频保护），用于压掉静止噪声，不引入延迟。
+
+> 历史：2026-09-17 曾把 `FLIP_STABILIZER` 的 One Euro 量纲修对（t63 133 → 17 ms）；
+> 2026-09-18 进一步确认滤波无法解决根本问题，遂整体删除。详见
+> [changelog 2026-09-18](../changelog/2026-09-18_mode-b-latency.md)。
 
 ---
 
@@ -51,8 +60,10 @@ ĝ → t_raw → t（稳定后）→ CC
 
 - 竖屏握持，与 Mode A 相同 orientation
 - 校准时 **肘部高度尽量固定**，只动腕部
-- iOS 需同时授权 **DeviceOrientation + DeviceMotion**
-- 旧版仅含 `beta/gamma` 的 flip 校准 **无效**，需重新校准
+- **只需授权 DeviceOrientation**（与 Mode A 相同；不再需要 DeviceMotion）
+- 旧版由**加速度计**采集的 flip 校准建议重做一次：若平台 `accelerationIncludingGravity`
+  的符号与 `R^T·ẑ` 相反（iOS/Android 历史上不一致），旧锚点会让数值反向。
+  校准向导第 3 步的实时预览可立即判断：跟着手腕单调走即正确。
 
 ---
 
@@ -74,6 +85,7 @@ ĝ → t_raw → t（稳定后）→ CC
 ```
 
 `anchors.min/max` 可选字段 `raw`（采样期未归一化均值）、`sampleCount`、`capturedAt`。
+结构未变，只是 `x/y/z` 现在由姿态推导（`gravityFromOrientation`）而非加速度计采样获得。
 
 旧版 `phone-midi/calibration/v1` 仅迁移至 **lift**；旧 flip β/γ 数据因缺少 `x,y,z` 会被 `loadCalibration('flip')` 拒绝。
 
@@ -102,8 +114,9 @@ Bridge `in_min=0`, `in_max=1`，与 Mode A 相同 mapping 引擎。
 | 3 | `/calibrate-flip.html` 用户向导 | ✅ |
 | 4 | 主页 Mode B + 模式卡片 UI | ✅ |
 | 5 | `/fusion-calibrate-flip.html` 开发者调试 | ✅ |
-| 6 | **重力融合**（替代 β/γ） | ✅ |
-| 7 | 真机样本 + γ 跳变区单调性验收 | 待定 |
+| 6 | 重力融合（替代 β/γ） | ✅ |
+| 7 | 真机样本 + γ 跳变区单调性验收 | ✅（向量形式天然无奇异区） |
+| 8 | **姿态融合**（替代加速度计 + 滤波链），与 Mode A 同构 | ✅ |
 
 ---
 
@@ -114,3 +127,6 @@ Bridge `in_min=0`, `in_max=1`，与 Mode A 相同 mapping 引擎。
 3. 仅翻腕时 CC 0→127 单调（**含 γ≈±90° 路径**）
 4. Bridge 收到 `axis: fused_flip`
 5. 调试导出 JSON 含 `input: "gravity"` 与 `gx/gy/gz` 轨迹样本
+6. 运行时链路逐采样点等于投影值（无滤波、无状态）——`tests/mode_b_latency.test.mjs`
+7. Mode B 不申请 DeviceMotion 权限，`devicemotion` 无法影响其数值——同上
+

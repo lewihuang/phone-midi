@@ -17,6 +17,7 @@
 | `/calibrate-lift.html` | Mode A 校准 |
 | `/calibrate-flip.html` | Mode B 校准 |
 | Mode B | `fused_flip` ∈ [0,1] |
+| Mode B 延迟（2026-09-18） | 融合源改为**姿态推导的重力向量**，与 Mode A 同构、无滤波 → [changelog](changelog/2026-09-18_mode-b-latency.md) |
 | Mode C | 原摇晃弯音（原 Mode B）→ [mode-c-shake.md](spec/mode-c-shake.md) 峰值标定 |
 
 ---
@@ -51,8 +52,11 @@
 | **Android 原生** | 大 | 原生 APK |
 | **macOS 支持** | 中 | 换掉 ctypes winmm 后端 |
 
-> 延迟基线（2026-09-17 实测）：Bridge 往返 p50 0.5 ms；Mode B 滤波链 t90 33 ms；
-> 采样与系统姿态融合约 20–50 ms 为平台下限。诊断页：`/latency.html`。
+> 延迟基线（2026-09-18）：Bridge 往返 p50 0.5 ms；**Mode A / Mode B 链路均无滤波**
+> （姿态 → 投影 → 发送阈值），Mode B 逐采样点等于投影值；剩余为采样与系统姿态融合的
+> 平台下限（约 20–50 ms）。诊断页：`/latency.html`。
+> 历史：2026-09-17 曾把 Mode B 的 One Euro 量纲修对（t90 333 → 33 ms），2026-09-18 改为
+> 姿态源后整条滤波链删除（见 [changelog](changelog/2026-09-18_mode-b-latency.md)）。
 
 ### 下一步建议
 
