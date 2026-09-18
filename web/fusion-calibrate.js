@@ -79,9 +79,6 @@
   const elRawGz = document.getElementById('rawGz');
   const elRawGravityRow = document.getElementById('rawGravityRow');
   const elFusionSource = document.getElementById('fusionSource');
-  const elStabilizerRow = document.getElementById('stabilizerRow');
-  const elRngGravityAvg = document.getElementById('rngGravityAvg');
-  const elLblGravityAvg = document.getElementById('lblGravityAvg');
   const elRawTRaw = document.getElementById('rawTRaw');
 
   let active = false;
@@ -91,7 +88,6 @@
   let liveGamma = null;
   let liveG = null;
   let liveFlip = null;
-  let flipSession = null;
   const anchors = { min: null, max: null };
   let recording = false;
   let recStartMs = 0;
@@ -101,15 +97,8 @@
   if (elBtnAnchorMin) elBtnAnchorMin.innerHTML = ui.minBtn;
   if (elBtnAnchorMax) elBtnAnchorMax.innerHTML = ui.maxBtn;
   if (elFusionSource && usesGravity) {
-    elFusionSource.textContent = '融合源：重力向量 · 主控默认平均 '
-      + F.getFlipProductionGravityAvgMs() + 'ms';
+    elFusionSource.textContent = '融合源：姿态推导的重力向量（deviceorientation，无滤波）';
   }
-  if (usesGravity && F.createFlipStabilizerSession) {
-    flipSession = F.createFlipStabilizerSession({ gravityAvgMs: 50 });
-  }
-  if (elStabilizerRow) elStabilizerRow.style.display = usesGravity ? '' : 'none';
-  const elStabilizerHint = document.getElementById('stabilizerHint');
-  if (elStabilizerHint) elStabilizerHint.style.display = usesGravity ? '' : 'none';
   if (elCcBar) elCcBar.style.background = ui.barGradient;
 
   function fmt(v) {
@@ -184,28 +173,12 @@
     };
   }
 
-  function getStabilizerOpts() {
-    if (!elRngGravityAvg) return { gravityAvgMs: 50 };
-    return { gravityAvgMs: parseInt(elRngGravityAvg.value, 10) };
-  }
-
-  function syncGravityAvgLabel() {
-    if (!elLblGravityAvg || !elRngGravityAvg) return;
-    const ms = parseInt(elRngGravityAvg.value, 10);
-    elLblGravityAvg.textContent = ms === 0 ? '0（瞬时）' : ms + ' ms';
-    if (flipSession) flipSession.setOptions(getStabilizerOpts());
-  }
-
   function feedFlip(event) {
-    if (flipSession) {
-      return flipSession.feed(event, anchors, getFusionConfig());
-    }
-    return F.feedFlipMotion(event, anchors, getFusionConfig());
+    return F.feedFlipOrientation(event.beta, event.gamma, anchors, getFusionConfig());
   }
 
   function resetFlipPipeline() {
-    if (flipSession) flipSession.reset();
-    else F.resetFlipMotion();
+    liveFlip = null;
   }
 
   function computeT() {
@@ -439,10 +412,6 @@
       trajectory: trajectory && trajectory.samples.length ? trajectory : undefined,
     };
     const out = F.buildExportJson(profileId, anchors, getFusionConfig(), extras);
-    if (usesGravity) {
-      out.stabilizer = getStabilizerOpts();
-      out.stabilizer.production_gravity_avg_ms = F.getFlipProductionGravityAvgMs();
-    }
     const otherId = profileId === 'flip' ? 'lift' : 'flip';
     const other = F.loadCalibration(otherId);
     if (F.anchorsReadyForProfile(profileId, anchors) && other && F.anchorsReady(other.anchors)) {
@@ -480,20 +449,15 @@
     renderAnchorInfo();
   }
 
-  function onMotion(event) {
-    if (!active || busy) return;
-    if (usesGravity) {
-      liveFlip = feedFlip(event);
-      if (liveFlip) liveG = liveFlip.g;
-      updatePreview();
-    }
-  }
-
   function onOrientation(event) {
     if (!active || busy) return;
     if (event.beta == null) return;
     liveBeta = event.beta;
     liveGamma = event.gamma;
+    if (usesGravity) {
+      liveFlip = feedFlip(event);
+      if (liveFlip) liveG = liveFlip.g;
+    }
     updatePreview();
   }
 
@@ -523,7 +487,6 @@
       document.getElementById(id).style.display = '';
     });
     window.addEventListener('deviceorientation', onOrientation, true);
-    window.addEventListener('devicemotion', onMotion, true);
   }
 
   function init() {
@@ -534,14 +497,6 @@
     elRngWBeta.addEventListener('input', () => syncWeights(true));
     elRngWGamma.addEventListener('input', () => syncWeights(false));
     elChkReverse.addEventListener('change', () => { updatePreview(); if (trajectory) drawTrajectory(); });
-    if (elRngGravityAvg) {
-      elRngGravityAvg.addEventListener('input', () => {
-        syncGravityAvgLabel();
-        resetFlipPipeline();
-        updatePreview();
-      });
-      syncGravityAvgLabel();
-    }
     elBtnRecStart.addEventListener('click', startRecording);
     elBtnRecStop.addEventListener('click', stopRecording);
     elBtnCopy.addEventListener('click', copyJson);

@@ -68,7 +68,7 @@
 <h1>延迟诊断</h1>
 <p class="sub">
   把「坐在电脑边上感觉到的延迟」拆成可测量的四段：<b>传感器采样</b>（平台下限）、
-  <b>主线程</b>（代码开销）、<b>网络</b>（Bridge 往返）、<b>滤波链</b>（Mode B 手感）。
+  <b>主线程</b>（代码开销）、<b>网络</b>（Bridge 往返）、<b>Mode B 链路</b>（姿态投影与发送侧门限）。
   本页不连接 WebSocket、不发送 MIDI，仅读取 <code>/status</code> 测往返。
 </p>
 
@@ -109,54 +109,43 @@
 </div>
 
 <div class="card">
-  <h2>④ 滤波链延迟 — Mode B 手感</h2>
+  <h2>④ Mode B 链路 — 姿态 → 投影 → CC（无滤波）</h2>
   <p class="hint">
-    翻转手机几次，本页用<b>生产代码同一条链路</b>（<code>feedFlipMotion</code>）比较「未滤波的投影值」与
-    「实际发出的值」跨过中点的时刻差。这就是手上感觉到的滞后。
+    翻转手机几次。<b>生产链路里没有任何平滑或平均</b>：<code>feedFlipOrientation</code> 输出的投影值就是要发出去的值。
+    这里实测两件事：发送侧门限（≥1 CC 步 + 4 ms 下限）带来的跨中点延迟，以及
+    <b>加速度计</b>与姿态在快速翻转时的偏差 —— 后者正是旧版「平均窗 + One Euro」想压却压不住的污染源。
   </p>
   <table class="kv">
-    <tr><td class="k">实测跨中点延迟（中位）</td><td class="v" id="lagMeasured">—</td></tr>
+    <tr><td class="k">发送侧跨中点延迟（中位）</td><td class="v" id="lagMeasured">—</td></tr>
     <tr><td class="k">采样次数</td><td class="v dim" id="lagSamples">0</td></tr>
-    <tr><td class="k">当前参数静止时时间常数</td><td class="v" id="tauRest">—</td></tr>
-    <tr><td class="k">当前参数快速动作时</td><td class="v" id="tauFast">—</td></tr>
+    <tr><td class="k">加速度计 vs 姿态偏差（中位 / 最大）</td><td class="v" id="driftMeasured">—</td></tr>
+    <tr><td class="k">偏差采样次数</td><td class="v dim" id="driftSamples">0</td></tr>
     <tr><td class="k">锚点来源</td><td class="v dim" id="anchorSrc">—</td></tr>
   </table>
   <div class="bars">
-    <div class="bar-line"><span class="name">原值</span><span class="bar-track"><span class="bar-fill raw" id="barRaw"></span></span><span class="num" id="numRaw">—</span></div>
-    <div class="bar-line"><span class="name">实际</span><span class="bar-track"><span class="bar-fill filt" id="barFilt"></span></span><span class="num" id="numFilt">—</span></div>
+    <div class="bar-line"><span class="name">姿态</span><span class="bar-track"><span class="bar-fill raw" id="barAtt"></span></span><span class="num" id="numAtt">—</span></div>
+    <div class="bar-line"><span class="name">加速度计</span><span class="bar-track"><span class="bar-fill filt" id="barAcc"></span></span><span class="num" id="numAcc">—</span></div>
   </div>
 </div>
 
 <div class="card">
-  <h2>⑤ 调参（会立即影响主控制页）</h2>
-  <p class="hint">值越大越跟手、越小越平滑。改完回主控制页直接生效，无需重装。</p>
-  <div class="slider-row">
-    <label>静止平滑 mincutoff <span class="val" id="vMincut">—</span></label>
-    <input type="range" id="sMincut" min="0.2" max="12" step="0.1">
-  </div>
-  <div class="slider-row">
-    <label>动起来跟随 beta <span class="val" id="vBeta">—</span></label>
-    <input type="range" id="sBeta" min="0" max="8" step="0.1">
-  </div>
-  <div class="slider-row">
-    <label>重力滑动平均 gravityAvgMs <span class="val" id="vGrav">—</span></label>
-    <input type="range" id="sGrav" min="0" max="120" step="5">
-  </div>
-  <div class="row-btn">
-    <button class="btn btn-sm" id="btnDefaults">恢复默认</button>
-    <button class="btn btn-sm" id="btnPresets">载入「最跟手」</button>
-  </div>
+  <h2>⑤ Mode B 无可调参数</h2>
+  <p class="hint">
+    旧版的 <code>mincutoff</code> / <code>beta</code> / <code>gravityAvgMs</code> 三个滑杆已删除：链路改成纯投影后，
+    任何滤波都会重新引入滞后，而加速度计污染根本不在滤波能处理的频段里（快速翻转时手部线加速度达 2–3 g）。
+    因此 Mode B 与 Mode A 现在是同一条架构，没有需要调的东西，也不会被调试页悄悄改掉主控手感。
+  </p>
 </div>
 
 <p class="verdict" id="verdict">
-  点上面的按钮启动传感器后，本页会持续给出四段延迟的实测值。
+  点上面的按钮启动传感器后，本页会持续给出各段延迟的实测值。
 </p>
 
 <p class="foot">
-  提示：本页与主控制页共享 <code>fusion.js</code> 的调参存储，调完即可回主页试手感。
+  提示：Mode B 的参数已固化在代码里（<code>fusion.js</code>），本页只做测量，不写任何存储。
 </p>
 
-<script src="fusion.js?v=16"></script>
-<script src="latency.js?v=1"></script>
+<script src="fusion.js?v=22"></script>
+<script src="latency.js?v=2"></script>
 </body>
 </html>

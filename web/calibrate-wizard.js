@@ -292,26 +292,19 @@
     if (e.beta == null) return;
     liveBeta = e.beta;
     liveGamma = e.gamma;
-    if (step === 2) updatePreview();
-  }
-
-  function onMotion(e) {
-    if (!sensorActive || busy || !usesGravity) return;
-    liveFlip = F.feedFlipMotion(e, anchors, F.DEFAULT_FUSION);
-    if (liveFlip) liveG = liveFlip.g;
+    if (usesGravity) {
+      liveFlip = F.feedFlipOrientation(e.beta, e.gamma, anchors, F.DEFAULT_FUSION);
+      if (liveFlip) liveG = liveFlip.g;
+    }
     if (step === 2) updatePreview();
   }
 
   async function ensureSensor() {
     if (sensorActive) return;
     await F.requestProfilePermissions(profileId);
-    F.resetFlipMotion();
     if (isShake) F.resetShakeRuntime();
     sensorActive = true;
     window.addEventListener('deviceorientation', onOrientation, true);
-    if (usesGravity) {
-      window.addEventListener('devicemotion', onMotion, true);
-    }
     if (isShake) {
       window.addEventListener('devicemotion', onShakeMotion, true);
     }

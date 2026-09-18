@@ -208,8 +208,6 @@
 
   let lastSendTime = 0;
 
-  let lastSentCc = null;
-
   let lastSentPb = null;
 
   let calibCache = { modeId: null, profile: null, data: null, ok: false };
@@ -981,8 +979,6 @@
 
     lastSentPb = null;
 
-    lastSentCc = null;
-
     if (m.vibrato) {
 
       resetVibratoRuntime();
@@ -1099,8 +1095,6 @@
 
     if (sending) lastSentVal = null;
 
-    lastSentCc = null;
-
   }
 
   window.toggleSend = toggleSend;
@@ -1161,9 +1155,17 @@
 
 
 
-  function handleFusedGravity(event, modeId) {
+  /**
+   * Mode B, deliberately the same shape as Mode A above: attitude → projection → emitValue.
+   * The gravity vector is derived from (beta, gamma) inside fusion.js, so nothing between the
+   * hand and the CC value filters, averages, or delays — the previous boxcar + One Euro chain
+   * that Mode B used to run here is what made it feel a beat behind Mode A.
+   */
+  function handleFusedFlip(event, modeId) {
 
     if (!active || currentMode !== modeId) return;
+
+    if (event.beta == null || event.gamma == null) return;
 
 
 
@@ -1185,9 +1187,11 @@
 
 
 
-    const out = F.feedFlipMotion(
+    const out = F.feedFlipOrientation(
 
-      event,
+      event.beta,
+
+      event.gamma,
 
       calibration.anchors,
 
@@ -1207,11 +1211,7 @@
 
 
 
-    if (!F.flipShouldSendValue(t, lastSentVal, lastSentCc)) return;
-
-    if (!emitValue(t)) return;
-
-    lastSentCc = F.fusedToCc(t);
+    emitValue(t);
 
   }
 
@@ -1250,6 +1250,8 @@
 
     if (currentMode === 'A') handleFusedOrientation(event, 'A');
 
+    else if (currentMode === 'B') handleFusedFlip(event, 'B');
+
   }
 
 
@@ -1258,9 +1260,7 @@
 
     if (!active) return;
 
-    if (currentMode === 'B') handleFusedGravity(event, 'B');
-
-    else if (currentMode === 'C') onMotion(event);
+    if (currentMode === 'C') onMotion(event);
 
   }
 
@@ -1272,7 +1272,9 @@
 
       await F.requestOrientationPermission();
 
-      if (selectedMode === 'B' || selectedMode === 'C') {
+      // Only Mode C reads devicemotion. Mode B now derives gravity from the attitude, so it
+      // asks for exactly what Mode A asks for.
+      if (selectedMode === 'C') {
 
         await F.requestMotionPermission();
 
@@ -1334,8 +1336,6 @@
 
 
 
-    F.resetFlipMotion();
-
     invalidateVibratoCalibration();
 
     vibEngine = null;
@@ -1350,8 +1350,6 @@
     lastSentVal = null;
 
     lastSentPb = null;
-
-    lastSentCc = null;
 
     lastSendTime = 0;
 
@@ -1407,8 +1405,6 @@
 
 
 
-    F.resetFlipMotion();
-
     stopVibratoLoop();
 
     if (releaseWakeLock) { releaseWakeLock(); releaseWakeLock = null; }
@@ -1418,8 +1414,6 @@
     lastSentVal = null;
 
     lastSentPb = null;
-
-    lastSentCc = null;
 
     lastSendTime = 0;
 

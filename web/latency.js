@@ -1,13 +1,16 @@
-// Phone MIDI CC — on-device latency diagnosis + Mode B tuning
+// Phone MIDI CC — on-device latency diagnosis
 //
 // Answers "is the lag the platform or the code?" by measuring, on the real
-// phone, the four stages that add up to hand-feel latency:
+// phone, the stages that add up to hand-feel latency:
 //   ① sensor event rate        -> platform floor, cannot be beaten by JS
 //   ② main-thread queue delay  -> code cost (per-event work, jank)
 //   ③ network RTT to the Bridge
-//   ④ the production Mode B filter chain (feedFlipMotion), measured as the
-//      delay between the unfiltered projection crossing t=0.5 and the value
-//      that is actually sent crossing t=0.5.
+//   ④ the production Mode B chain (feedFlipOrientation), which is now stateless: the
+//      attitude projection *is* the sent value. What is measured is (a) the delay the
+//      send-side threshold adds between the projection crossing t=0.5 and the value
+//      actually leaving the phone, and (b) how far the accelerometer's gravity direction
+//      drifts from the attitude's while the hand moves — the contamination that the old
+//      filter chain could not remove and that this page exists to show.
 //
 // Does not open a WebSocket and never sends MIDI.
 
@@ -36,22 +39,14 @@
 
   const elLagMeasured = document.getElementById('lagMeasured');
   const elLagSamples = document.getElementById('lagSamples');
-  const elTauRest = document.getElementById('tauRest');
-  const elTauFast = document.getElementById('tauFast');
+  const elDriftMeasured = document.getElementById('driftMeasured');
+  const elDriftSamples = document.getElementById('driftSamples');
   const elAnchorSrc = document.getElementById('anchorSrc');
-  const elBarRaw = document.getElementById('barRaw');
-  const elNumRaw = document.getElementById('numRaw');
-  const elBarFilt = document.getElementById('barFilt');
-  const elNumFilt = document.getElementById('numFilt');
+  const elBarAtt = document.getElementById('barAtt');
+  const elNumAtt = document.getElementById('numAtt');
+  const elBarAcc = document.getElementById('barAcc');
+  const elNumAcc = document.getElementById('numAcc');
 
-  const elVMincut = document.getElementById('vMincut');
-  const elSBeta0 = document.getElementById('sBeta');
-  const elVBeta = document.getElementById('vBeta');
-  const elSGrav = document.getElementById('sGrav');
-  const elVGrav = document.getElementById('vGrav');
-  const elSMincut = document.getElementById('sMincut');
-  const elBtnDefaults = document.getElementById('btnDefaults');
-  const elBtnPresets = document.getElementById('btnPresets');
   const elVerdict = document.getElementById('verdict');
 
   let running = false;
@@ -140,34 +135,77 @@
   }
   requestAnimationFrame(frameLoop);
 
-  // ── ④ production filter chain lag ─────────────────────────────────────────
+  // ── ④ production Mode B chain ─────────────────────────────────────────────
+  //
+  // Mode B is stateless now: t = projection(gravityFromOrientation(beta, gamma)). The only
+  // thing between that value and the wire is the send-side change threshold in app.js, so
+  // that — not a filter — is what gets measured here. The accelerometer's own gravity
+  // projection is computed alongside purely to quantify the contamination the attitude
+  // source avoids.
 
-  const lag = { samples: [], prevRaw: null, armedForRise: false, rawCrossAt: null, lastT: null, lastRaw: null };
+  const SEND_THRESHOLD = 0.008;   // must match app.js SEND_THRESHOLD.B
+  const MIN_SEND_INTERVAL_MS = 4; // must match app.js
 
-  function feedAndMeasure(event) {
-    const out = F.feedFlipMotion(event, anchors, fusion);
+  const lag = {
+    samples: [],
+    drift: [],
+    prevT: null,
+    armedForRise: false,
+    projCrossAt: null,
+    lastSent: null,
+    lastSentAt: -1e9,
+  };
+
+  /** Replicates app.js's emitValue gate: threshold + 4 ms floor, drops nothing else. */
+  function wouldSend(t, now) {
+    if (lag.lastSent !== null && Math.abs(t - lag.lastSent) < SEND_THRESHOLD) return false;
+    if (now - lag.lastSentAt < MIN_SEND_INTERVAL_MS) return false;
+    lag.lastSent = t;
+    lag.lastSentAt = now;
+    return true;
+  }
+
+  function feedAndMeasure(e) {
+    if (!anchors) return null;
+    const out = F.feedFlipOrientation(e.beta, e.gamma, anchors, fusion);
     if (!out) return null;
-    lag.lastT = out.t;
-    lag.lastRaw = out.t_raw;
+    const now = performance.now();
 
-    if (out.t_raw < 0.35) {
+    // (a) projection crossing t=0.5 -> the value that actually leaves the phone.
+    if (out.t < 0.35) {
       lag.armedForRise = true;
-      lag.rawCrossAt = null;
+      lag.projCrossAt = null;
     }
-    if (lag.armedForRise && lag.rawCrossAt == null && out.t_raw >= 0.5
-        && lag.prevRaw != null && out.t_raw > lag.prevRaw) {
-      lag.rawCrossAt = performance.now();
-    } else if (lag.armedForRise && lag.rawCrossAt != null && out.t >= 0.5) {
-      const d = performance.now() - lag.rawCrossAt;
-      if (d >= 0 && d < 2000) {
-        lag.samples.push(d);
-        if (lag.samples.length > 60) lag.samples.shift();
+    if (lag.armedForRise && lag.projCrossAt == null && out.t >= 0.5
+        && lag.prevT != null && out.t > lag.prevT) {
+      lag.projCrossAt = now;
+    } else if (lag.armedForRise && lag.projCrossAt != null) {
+      if (wouldSend(out.t, now) && out.t >= 0.5) {
+        const d = now - lag.projCrossAt;
+        if (d >= 0 && d < 2000) {
+          lag.samples.push(d);
+          if (lag.samples.length > 60) lag.samples.shift();
+        }
+        lag.armedForRise = false;
+        lag.projCrossAt = null;
       }
-      lag.armedForRise = false;
-      lag.rawCrossAt = null;
     }
-    lag.prevRaw = out.t_raw;
+    lag.prevT = out.t;
     return out;
+  }
+
+  /** |attitude t - accelerometer t| in CC steps, sampled while the hand moves. */
+  function measureAccelDrift(e, tAtt) {
+    if (!anchors || tAtt == null) return;
+    const acc = e.accelerationIncludingGravity || e.acceleration;
+    if (!acc || acc.x == null) return;
+    const tAcc = F.computeGravityFusedT(acc.x, acc.y, acc.z, anchors, fusion);
+    if (tAcc == null) return;
+    const d = Math.abs(tAcc - tAtt) * 127;
+    if (d <= 127) {
+      lag.drift.push(d);
+      if (lag.drift.length > 400) lag.drift.shift();
+    }
   }
 
   function resolveAnchors() {
@@ -185,18 +223,24 @@
   function onOrientation(e) {
     if (!running) return;
     track(oriTracker, e);
+    const out = feedAndMeasure(e);
+    if (!out) return;
+    elBarAtt.style.width = (out.t * 100).toFixed(1) + '%';
+    elNumAtt.textContent = out.t.toFixed(3);
+    lag.lastAttT = out.t;
   }
 
   function onMotion(e) {
     if (!running) return;
     track(motTracker, e);
     if (!anchors) return;
-    const out = feedAndMeasure(e);
-    if (!out) return;
-    elBarRaw.style.width = (out.t_raw * 100).toFixed(1) + '%';
-    elNumRaw.textContent = out.t_raw.toFixed(3);
-    elBarFilt.style.width = (out.t * 100).toFixed(1) + '%';
-    elNumFilt.textContent = out.t.toFixed(3);
+    const acc = e.accelerationIncludingGravity || e.acceleration;
+    if (!acc || acc.x == null) return;
+    const tAcc = F.computeGravityFusedT(acc.x, acc.y, acc.z, anchors, fusion);
+    if (tAcc == null) return;
+    elBarAcc.style.width = (tAcc * 100).toFixed(1) + '%';
+    elNumAcc.textContent = tAcc.toFixed(3);
+    measureAccelDrift(e, lag.lastAttT);
   }
 
   // ── ③ network RTT ─────────────────────────────────────────────────────────
@@ -244,28 +288,6 @@
 
   // ── tuning UI ─────────────────────────────────────────────────────────────
 
-  function syncTuningUi() {
-    const t = F.getFlipTuning();
-    elSMincut.value = t.mincutoff;
-    elSBeta0.value = t.beta;
-    elSGrav.value = t.gravityAvgMs;
-    elVMincut.textContent = t.mincutoff.toFixed(1) + ' Hz';
-    elVBeta.textContent = t.beta.toFixed(1);
-    elVGrav.textContent = t.gravityAvgMs.toFixed(0) + ' ms';
-    elTauRest.textContent = F.flipTimeConstantMs(0).toFixed(0) + ' ms';
-    elTauFast.textContent = F.flipTimeConstantMs(3).toFixed(0) + ' ms';
-    setVerdictClass(elTauRest, F.flipTimeConstantMs(0) < 80 ? 'good' : 'bad');
-  }
-
-  function onTuningInput() {
-    F.setFlipTuning({
-      mincutoff: parseFloat(elSMincut.value),
-      beta: parseFloat(elSBeta0.value),
-      gravityAvgMs: parseFloat(elSGrav.value),
-    });
-    syncTuningUi();
-  }
-
   // ── periodic UI refresh ───────────────────────────────────────────────────
 
   function refresh() {
@@ -307,30 +329,36 @@
     elLagMeasured.textContent = lag.samples.length ? fmtMs(lagP50) : '翻转手机以测量…';
     setVerdictClass(elLagMeasured, lagP50 == null ? '' : (lagP50 < 40 ? 'good' : (lagP50 < 90 ? 'warn' : 'bad')));
     elLagSamples.textContent = String(lag.samples.length);
+
+    const driftP50 = percentile(lag.drift, 0.5);
+    const driftMax = lag.drift.length ? Math.max(...lag.drift) : null;
+    elDriftMeasured.textContent = lag.drift.length
+      ? `${driftP50.toFixed(1)} / ${driftMax.toFixed(1)} CC 步`
+      : '翻转手机以测量…';
+    setVerdictClass(elDriftMeasured, driftP50 == null ? '' : (driftP50 < 2 ? 'good' : (driftP50 < 8 ? 'warn' : 'bad')));
+    elDriftSamples.textContent = String(lag.drift.length);
     elAnchorSrc.textContent = anchorSource;
 
     updateVerdict({ ori, mot, q50, q95, lagP50 });
   }
 
   function updateVerdict(m) {
-    const sensorHalf = m.mot.p50 != null ? m.mot.p50 / 2 : (m.ori.p50 != null ? m.ori.p50 / 2 : null);
+    const sensorHalf = m.ori.p50 != null ? m.ori.p50 / 2 : (m.mot.p50 != null ? m.mot.p50 / 2 : null);
     const parts = [];
     let total = 0;
 
     if (sensorHalf != null) { parts.push(`采样半周期 ${sensorHalf.toFixed(1)}`); total += sensorHalf; }
     if (m.q50 != null) { parts.push(`主线程排队 ${m.q50.toFixed(1)}`); total += m.q50; }
     if (rttResult) { parts.push(`网络半程 ${(rttResult.p50 / 2).toFixed(1)}`); total += rttResult.p50 / 2; }
-    if (m.lagP50 != null) { parts.push(`Mode B 滤波 ${m.lagP50.toFixed(0)}`); total += m.lagP50; }
+    if (m.lagP50 != null) { parts.push(`发送侧门限 ${m.lagP50.toFixed(0)}`); total += m.lagP50; }
 
     let head;
     if (m.ori.hz && m.ori.hz < 40) {
-      head = '传感器采样率偏低，这是平台限制（浏览器/系统给的上限）。';
-    } else if (m.lagP50 != null && m.lagP50 > 90) {
-      head = '滤波链是主要延迟来源 —— 属于代码，可在下方 ⑤ 调小。';
+      head = '姿态采样率偏低，这是平台限制（浏览器/系统给的上限）。';
     } else if (m.q95 != null && m.q95 > 80) {
       head = '主线程存在明显排队/掉帧 —— 属于代码开销。';
     } else {
-      head = '各段均正常，剩余延迟主要是采样与系统融合的物理下限。';
+      head = 'Mode B 链路无滤波：投影值即发送值，剩余延迟是采样与系统姿态融合的物理下限。';
     }
 
     const totalTxt = parts.length ? `<br>估算端到端 ≈ <b>${total.toFixed(0)} ms</b>（${parts.join(' + ')}）` : '';
@@ -352,10 +380,15 @@
       elBtnStart.disabled = false;
       return;
     }
+    // devicemotion is only needed for the accelerometer-contamination readout, so a refusal
+    // must not stop the diagnosis.
+    try { await F.requestMotionPermission(); } catch (_) { /* comparison unavailable */ }
     showError('');
     anchors = resolveAnchors();
-    F.resetFlipMotion();
     lag.samples = [];
+    lag.drift = [];
+    lag.lastSent = null;
+    lag.lastSentAt = -1e9;
     running = true;
     window.addEventListener('deviceorientation', onOrientation, true);
     window.addEventListener('devicemotion', onMotion, true);
@@ -370,21 +403,8 @@
   elBtnStorage.addEventListener('click', measureStorage);
   elBtnRtt.addEventListener('click', () => { measureRtt().then((r) => { rttResult = r; }); });
 
-  elSMincut.addEventListener('input', onTuningInput);
-  elSBeta0.addEventListener('input', onTuningInput);
-  elSGrav.addEventListener('input', onTuningInput);
-
-  elBtnDefaults.addEventListener('click', () => { F.resetFlipTuning(); syncTuningUi(); });
-  elBtnPresets.addEventListener('click', () => {
-    // lowest lag: no averaging, high rest cutoff, strongly adaptive
-    F.setFlipTuning({ gravityAvgMs: 0, mincutoff: 8, beta: 3 });
-    syncTuningUi();
-  });
-
   if (!F) {
     showError('fusion.js 未加载，请刷新页面');
     elBtnStart.disabled = true;
-  } else {
-    syncTuningUi();
   }
 })();

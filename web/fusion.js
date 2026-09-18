@@ -8,121 +8,42 @@
   const MIN_SEP = 4;
   const MIN_SHAKE_SEP = 3;
 
-  const FLIP_TUNING_KEY = 'phone-midi/tuning/flip/v1';
-
   /**
-   * Flip runtime stabilizer: sliding avg (ms) on gravity + One Euro on t.
+   * Mode B gravity direction, derived from the device's *attitude* (deviceorientation).
    *
-   * NOTE ON UNITS: the One Euro filter runs on the normalised fusion scalar
-   * t ∈ [0,1], so `beta` is multiplied by |dt/dt| in *t-units per second*,
-   * which is at most ~10 even for a fast flip. The historical beta=0.008
-   * belongs to pixel/degree inputs (hundreds of units/s): the adaptive term
-   * was inert and the cutoff stayed pinned at mincutoff, i.e. a 159 ms time
-   * constant — the dominant source of hand-feel lag in Mode B.
-   * Defaults below give t63 ≈ 17 ms / t90 ≈ 33 ms on a step (retune at /latency.html).
+   * Why not the accelerometer: `accelerationIncludingGravity` reports gravity **plus the
+   * hand's own linear acceleration**. A deliberate palm flip reaches 2-3 g of hand
+   * acceleration (model of a 300 ms flip: |a| 4.8-33 m/s^2), which tilts the estimated
+   * gravity direction by tens of degrees. No low-pass can remove that, because the
+   * contamination sits in the same band as the gesture itself — the old boxcar + One Euro
+   * chain therefore had to choose between lag and error, and measured 76 CC steps RMS of
+   * error at 300 ms while still lagging 35 ms at 1200 ms. The OS attitude is already fused
+   * from gyro + accelerometer, so it carries the *orientation* alone, unfiltered and exact.
+   *
+   * Derivation (W3C deviceorientation, intrinsic Z-X'-Y''): R = Rz(a)*Rx(b)*Ry(g), and the
+   * gravity direction in the device frame is R^T*z = the third row of R:
+   *
+   *     u = (-cos(b)*sin(g),  sin(b),  cos(b)*cos(g))
+   *
+   * independent of alpha (yaw), and continuous through b = +-90 degrees because cos(b) = 0
+   * there makes the ill-defined g drop out. This is the same quantity Mode A projects with
+   * (beta, gamma), so both modes now share one architecture:
+   * attitude -> projection onto calibrated anchors -> CC, with no temporal filtering.
+   *
+   * Consequence for stored calibrations: anchors are unit gravity vectors, and the endpoint
+   * projection (u - u0).(u1 - u0) / |u1 - u0|^2 is NOT invariant under a sign flip of the
+   * anchors. A flip calibration captured through the old accelerometer path therefore has to be
+   * re-taken once, in the (rare) case that the platform's `accelerationIncludingGravity` points
+   * opposite to R^T*z; the wizard's preview makes it obvious (the value would move backwards).
    */
-  const FLIP_STABILIZER_DEFAULTS = {
-    gravityAvgMs: 20,
-    mincutoff: 3.0,
-    beta: 1.5,
-    dcutoff: 1.0,
-    sendMinDelta: 0.012,
-    ccHysteresis: 0.5,
-  };
-
-  const FLIP_STABILIZER = {
-    gravityAvgMs: FLIP_STABILIZER_DEFAULTS.gravityAvgMs,
-    oneEuro: {
-      mincutoff: FLIP_STABILIZER_DEFAULTS.mincutoff,
-      beta: FLIP_STABILIZER_DEFAULTS.beta,
-      dcutoff: FLIP_STABILIZER_DEFAULTS.dcutoff,
-    },
-    sendMinDelta: FLIP_STABILIZER_DEFAULTS.sendMinDelta,
-    ccHysteresis: FLIP_STABILIZER_DEFAULTS.ccHysteresis,
-  };
-
-  const FLIP_TUNING_LIMITS = {
-    gravityAvgMs: { min: 0, max: 120, step: 5 },
-    mincutoff: { min: 0.2, max: 12, step: 0.1 },
-    beta: { min: 0, max: 8, step: 0.1 },
-    dcutoff: { min: 0.2, max: 12, step: 0.1 },
-  };
-
-  function clampTo(key, v) {
-    const lim = FLIP_TUNING_LIMITS[key];
-    const n = Number(v);
-    if (!Number.isFinite(n)) return null;
-    if (!lim) return n;
-    return Math.max(lim.min, Math.min(lim.max, n));
+  function gravityFromOrientation(beta, gamma) {
+    if (beta == null || gamma == null || Number.isNaN(beta) || Number.isNaN(gamma)) return null;
+    const b = beta * Math.PI / 180;
+    const g = gamma * Math.PI / 180;
+    const cb = Math.cos(b);
+    return normalize3(-cb * Math.sin(g), Math.sin(b), cb * Math.cos(g));
   }
 
-  function getFlipTuning() {
-    return {
-      gravityAvgMs: FLIP_STABILIZER.gravityAvgMs,
-      mincutoff: FLIP_STABILIZER.oneEuro.mincutoff,
-      beta: FLIP_STABILIZER.oneEuro.beta,
-      dcutoff: FLIP_STABILIZER.oneEuro.dcutoff,
-      sendMinDelta: FLIP_STABILIZER.sendMinDelta,
-      ccHysteresis: FLIP_STABILIZER.ccHysteresis,
-    };
-  }
-
-  /** Mutates FLIP_STABILIZER in place so live references (oneEuroFilterT) pick it up. */
-  function applyFlipTuning(t) {
-    if (!t) return getFlipTuning();
-    const g = clampTo('gravityAvgMs', t.gravityAvgMs);
-    if (g != null) FLIP_STABILIZER.gravityAvgMs = g;
-    const mc = clampTo('mincutoff', t.mincutoff);
-    if (mc != null) FLIP_STABILIZER.oneEuro.mincutoff = mc;
-    const be = clampTo('beta', t.beta);
-    if (be != null) FLIP_STABILIZER.oneEuro.beta = be;
-    const dc = clampTo('dcutoff', t.dcutoff);
-    if (dc != null) FLIP_STABILIZER.oneEuro.dcutoff = dc;
-    if (typeof t.sendMinDelta === 'number' && t.sendMinDelta >= 0) {
-      FLIP_STABILIZER.sendMinDelta = t.sendMinDelta;
-    }
-    if (typeof t.ccHysteresis === 'number' && t.ccHysteresis >= 0) {
-      FLIP_STABILIZER.ccHysteresis = t.ccHysteresis;
-    }
-    return getFlipTuning();
-  }
-
-  function saveFlipTuning(t) {
-    const next = applyFlipTuning(t);
-    try {
-      localStorage.setItem(FLIP_TUNING_KEY, JSON.stringify(next));
-    } catch (_) { /* private mode: keep the in-memory value */ }
-    return next;
-  }
-
-  function resetFlipTuning() {
-    try {
-      localStorage.removeItem(FLIP_TUNING_KEY);
-    } catch (_) { /* ignore */ }
-    return applyFlipTuning(FLIP_STABILIZER_DEFAULTS);
-  }
-
-  function loadFlipTuning() {
-    try {
-      const raw = localStorage.getItem(FLIP_TUNING_KEY);
-      if (!raw) return getFlipTuning();
-      return applyFlipTuning(JSON.parse(raw));
-    } catch (_) {
-      return getFlipTuning();
-    }
-  }
-
-  /** Effective cutoff / time constant for a given |dt/dt| — used by /latency.html. */
-  function flipCutoffForSpeed(speed) {
-    return FLIP_STABILIZER.oneEuro.mincutoff
-      + FLIP_STABILIZER.oneEuro.beta * Math.abs(Number(speed) || 0);
-  }
-
-  function flipTimeConstantMs(speed) {
-    const cutoff = flipCutoffForSpeed(speed);
-    if (!(cutoff > 0)) return 0;
-    return 1000 / (2 * Math.PI * cutoff);
-  }
 
   const DEFAULT_FUSION = {
     mode: 'endpoint_projection',
@@ -708,19 +629,26 @@
     });
   }
 
+  /**
+   * Gravity anchors from the attitude, averaged and normalised — deliberately the *same* source
+   * `feedFlipOrientation` uses at runtime, so capture and runtime cannot disagree about the
+   * frame or the sign convention (a calibration taken from the old accelerometer source has to
+   * be re-taken once: a platform that reports the negated gravity vector would otherwise map the
+   * flip backwards, and the endpoint projection is not invariant under that sign change).
+   * The stored JSON shape is unchanged (x/y/z unit vector).
+   */
   function captureGravityAnchorSamples() {
     return new Promise((resolve, reject) => {
       const samples = [];
       const handler = (e) => {
-        const acc = e.accelerationIncludingGravity;
-        if (!acc || acc.x == null) return;
-        samples.push({ x: acc.x, y: acc.y, z: acc.z });
+        const g = gravityFromOrientation(e.beta, e.gamma);
+        if (g) samples.push(g);
       };
-      global.addEventListener('devicemotion', handler, true);
+      global.addEventListener('deviceorientation', handler, true);
       setTimeout(() => {
-        global.removeEventListener('devicemotion', handler, true);
+        global.removeEventListener('deviceorientation', handler, true);
         if (samples.length === 0) {
-          reject(new Error('未收到传感器数据'));
+          reject(new Error('未收到姿态数据，请确认已授权方向传感器'));
           return;
         }
         const ax = average(samples, 'x');
@@ -770,156 +698,23 @@
       await requestMotionPermission();
       return;
     }
+    // 'gravity' (Mode B) is derived from the attitude, so it needs the orientation sensor
+    // only — the same single permission Mode A needs. Mode C's 'motion' needs both.
     await requestOrientationPermission();
-    if (input === 'gravity') {
-      await requestMotionPermission();
-    }
-  }
-
-  function extractGravityFromMotion(event) {
-    const acc = event.accelerationIncludingGravity;
-    if (!acc || acc.x == null) return null;
-    return normalize3(acc.x, acc.y, acc.z);
-  }
-
-  function lowPassAlpha(cutoff, dt) {
-    const tau = 1.0 / (2 * Math.PI * cutoff);
-    return 1.0 / (1.0 + tau / Math.max(dt, 1e-4));
-  }
-
-  function oneEuroFilterT(euro, value, dt) {
-    const cfg = FLIP_STABILIZER.oneEuro;
-    if (euro.x == null || Number.isNaN(euro.x)) {
-      euro.x = value;
-      euro.dx = 0;
-      return value;
-    }
-    const dtSafe = Math.max(dt, 1e-4);
-    const edx = (value - euro.x) / dtSafe;
-    const aD = lowPassAlpha(cfg.dcutoff, dtSafe);
-    euro.dx = aD * edx + (1 - aD) * euro.dx;
-    const cutoff = cfg.mincutoff + cfg.beta * Math.abs(euro.dx);
-    const a = lowPassAlpha(cutoff, dtSafe);
-    euro.x = a * value + (1 - a) * euro.x;
-    return euro.x;
-  }
-
-  function createFlipStabilizer() {
-    return {
-      gravityBuffer: [],
-      euro: { x: null, dx: 0, lastTime: null },
-    };
-  }
-
-  function resetFlipStabilizer(state) {
-    if (!state) return;
-    state.gravityBuffer = [];
-    state.euro = { x: null, dx: 0, lastTime: null };
-  }
-
-  function pushFlipGravityRaw(state, event, gravityAvgMs) {
-    const acc = event.accelerationIncludingGravity;
-    if (!acc || acc.x == null) return false;
-    const avgMs = typeof gravityAvgMs === 'number' ? gravityAvgMs : FLIP_STABILIZER.gravityAvgMs;
-    const now = performance.now();
-    state.gravityBuffer.push({ x: acc.x, y: acc.y, z: acc.z, t: now });
-    const cutoff = now - avgMs;
-    while (state.gravityBuffer.length && state.gravityBuffer[0].t < cutoff) {
-      state.gravityBuffer.shift();
-    }
-    return true;
-  }
-
-  function averagedGravityFromBuffer(state) {
-    const buf = state.gravityBuffer;
-    if (!buf.length) return null;
-    let sx = 0;
-    let sy = 0;
-    let sz = 0;
-    for (let i = 0; i < buf.length; i++) {
-      sx += buf[i].x;
-      sy += buf[i].y;
-      sz += buf[i].z;
-    }
-    const n = buf.length;
-    return normalize3(sx / n, sy / n, sz / n);
   }
 
   /**
-   * A + C pipeline: buffer-averaged ĝ → project → One Euro on t.
-   * Returns { t, t_raw, g } or null.
+   * Mode B production path: attitude -> gravity direction -> endpoint projection.
+   * Stateless and unfiltered, exactly like Mode A. The only conditioning left is the
+   * send-side change threshold in `emitValue` (>= 1 CC step), which rejects rest noise
+   * without adding any lag to the control value.
    */
-  function processFlipGravityMotion(state, event, anchors, fusion, opts) {
-    const gravityAvgMs = opts && typeof opts.gravityAvgMs === 'number'
-      ? opts.gravityAvgMs
-      : FLIP_STABILIZER.gravityAvgMs;
-    if (!state || !pushFlipGravityRaw(state, event, gravityAvgMs)) return null;
-    const g = averagedGravityFromBuffer(state);
+  function feedFlipOrientation(beta, gamma, anchors, fusion) {
+    const g = gravityFromOrientation(beta, gamma);
     if (!g) return null;
-    const tRaw = computeGravityFusedT(g.x, g.y, g.z, anchors, fusion);
-    if (tRaw == null) return null;
-    const now = performance.now();
-    const dt = state.euro.lastTime != null ? (now - state.euro.lastTime) / 1000 : 0.016;
-    state.euro.lastTime = now;
-    const t = clamp(oneEuroFilterT(state.euro, tRaw, dt), 0, 1);
-    return { t, t_raw: tRaw, g };
-  }
-
-  /** B: CC-level hysteresis + minimum delta before WebSocket send */
-  function flipShouldSendValue(t, lastSentVal, lastSentCc) {
-    if (t == null) return false;
-    const cc = fusedToCc(t);
-    const h = FLIP_STABILIZER.ccHysteresis;
-    if (lastSentCc != null) {
-      if (cc === lastSentCc) return false;
-      if (cc > lastSentCc) {
-        if (t < (cc - h) / 127) return false;
-      } else if (t > (cc + h) / 127) {
-        return false;
-      }
-    }
-    if (lastSentVal !== null && Math.abs(t - lastSentVal) < FLIP_STABILIZER.sendMinDelta) {
-      return false;
-    }
-    return true;
-  }
-
-  let _flipRuntime = createFlipStabilizer();
-
-  /** Mode B production path: smoothed flip t from devicemotion (A+C internal). */
-  function feedFlipMotion(event, anchors, fusion) {
-    return processFlipGravityMotion(_flipRuntime, event, anchors, fusion);
-  }
-
-  function resetFlipMotion() {
-    resetFlipStabilizer(_flipRuntime);
-  }
-
-  /**
-   * Debug / tuning: isolated stabilizer session with configurable gravityAvgMs.
-   * Production Mode B uses feedFlipMotion() → FLIP_STABILIZER.gravityAvgMs.
-   */
-  function createFlipStabilizerSession(initialOpts) {
-    const state = createFlipStabilizer();
-    const sessionOpts = {
-      gravityAvgMs: (initialOpts && initialOpts.gravityAvgMs != null)
-        ? initialOpts.gravityAvgMs
-        : FLIP_STABILIZER.gravityAvgMs,
-    };
-    return {
-      getOptions() { return { ...sessionOpts }; },
-      setOptions(o) {
-        if (o && typeof o.gravityAvgMs === 'number') sessionOpts.gravityAvgMs = o.gravityAvgMs;
-      },
-      reset() { resetFlipStabilizer(state); },
-      feed(event, anchors, fusion) {
-        return processFlipGravityMotion(state, event, anchors, fusion, sessionOpts);
-      },
-    };
-  }
-
-  function getFlipProductionGravityAvgMs() {
-    return FLIP_STABILIZER.gravityAvgMs;
+    const t = computeGravityFusedT(g.x, g.y, g.z, anchors, fusion);
+    if (t == null) return null;
+    return { t, t_raw: t, g };
   }
 
   // ── Mode C: shake → pitch bend runtime ─────────────────────────────────────
@@ -1027,6 +822,12 @@
     } catch (_) {
       return getShakeTuning();
     }
+  }
+
+  /** One-pole alpha for a cutoff in Hz. Shared by Mode C's One Euro step. */
+  function lowPassAlpha(cutoff, dt) {
+    const tau = 1.0 / (2 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / Math.max(dt, 1e-4));
   }
 
   function oneEuroStep(euro, value, dt, cfg) {
@@ -1511,9 +1312,9 @@
     return out;
   }
 
-  // Persisted Mode B tuning must be in effect before any fusion call.
-  loadFlipTuning();
-  // Same for Mode C: bendRange and friends are user-tunable and persisted.
+  // Mode B has no tunable state: its chain is stateless (see gravityFromOrientation), so a
+  // debug page can no longer leave a persisted override behind for the control page.
+  // Mode C: bendRange and friends are user-tunable and persisted.
   loadShakeTuning();
 
   global.PhoneMidiFusion = {
@@ -1545,16 +1346,9 @@
     validShakeScale,
     robustShakePeaks,
     quantileSorted,
-    // ── Mode B tuning ──
-    FLIP_TUNING_KEY,
-    FLIP_TUNING_LIMITS,
-    FLIP_STABILIZER_DEFAULTS,
-    getFlipTuning,
-    setFlipTuning: saveFlipTuning,
-    resetFlipTuning,
-    loadFlipTuning,
-    flipCutoffForSpeed,
-    flipTimeConstantMs,
+    // ── Mode B: attitude-declared gravity, no tunable state ──
+    gravityFromOrientation,
+    feedFlipOrientation,
     clamp,
     normalize3,
     getOrientationType,
@@ -1589,12 +1383,6 @@
     requestOrientationPermission,
     requestMotionPermission,
     requestProfilePermissions,
-    extractGravityFromMotion,
-    feedFlipMotion,
-    resetFlipMotion,
-    flipShouldSendValue,
-    createFlipStabilizerSession,
-    getFlipProductionGravityAvgMs,
     buildExportJson,
     consumeJustSavedFlag,
     isValidAnchor,

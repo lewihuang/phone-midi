@@ -167,7 +167,7 @@
   <h1 id="pageTitle">Mode B 融合标定</h1>
 
   <p id="fusionSource" class="meta" style="margin-top:4px"></p>
-  <p>开发者调试：翻转手掌 → <strong>重力向量融合</strong> → CC。标定 MIN/MAX、录轨迹、复制 JSON 发分析。用户校准请用 <a href="/calibrate-flip.html" style="color:#64748b">校准翻转 (B)</a>。</p>
+  <p>开发者调试：翻转手掌 → <strong>姿态推导的重力向量</strong> → CC（无滤波，与主控同一条链路）。标定 MIN/MAX、录轨迹、复制 JSON 发分析。用户校准请用 <a href="/calibrate-flip.html" style="color:#64748b">校准翻转 (B)</a>。</p>
 
 </div>
 
@@ -279,18 +279,6 @@
 
   </div>
 
-  <div class="param-row" id="stabilizerRow" style="display:none">
-
-    <label for="rngGravityAvg">平均窗</label>
-
-    <input class="param-range" id="rngGravityAvg" type="range" min="0" max="120" step="10" value="50">
-
-    <span id="lblGravityAvg" style="font-family:monospace;font-size:12px;min-width:56px">50 ms</span>
-
-  </div>
-
-  <p class="hint" id="stabilizerHint" style="display:none;font-size:11px;margin:0 0 8px;line-height:1.5">调试：可调重力滑动平均窗口（与主控相同默认 50ms）。越低越跟手，越高越稳。</p>
-
   <div class="param-check" style="margin-top:8px">
 
     <input type="checkbox" id="chkReverse">
@@ -349,7 +337,7 @@
 
 <div class="error" id="error"></div>
 
-<p class="hint" id="hint">点击启动后授权 DeviceOrientation + DeviceMotion（iOS 需用户手势）</p>
+<p class="hint" id="hint">点击启动后授权 DeviceOrientation（iOS 需用户手势）</p>
 
 <div class="meta" id="orientationMeta"></div>
 
@@ -363,9 +351,9 @@
 
 
 
-<script src="fusion.js?v=16"></script>
+<script src="fusion.js?v=22"></script>
 
-<script src="fusion-calibrate.js?v=5"></script>
+<script src="fusion-calibrate.js?v=6"></script>
 
 </body>
 
