@@ -1,5 +1,8 @@
 # Runs the offline verification suite. No phone, no DAW, no network.
 $ErrorActionPreference = 'Continue'
+# Some checks print Chinese; a GBK console would raise UnicodeEncodeError mid-run and look
+# like a failure that never happened.
+$env:PYTHONIOENCODING = 'utf-8'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $fail = 0
 
@@ -13,6 +16,10 @@ if ($LASTEXITCODE -ne 0) { $fail++ }
 
 Write-Host "`n=== bridge_boot_check.py (starts the real bridge) ===" -ForegroundColor Cyan
 python "$here/bridge_boot_check.py"
+if ($LASTEXITCODE -ne 0) { $fail++ }
+
+Write-Host "`n=== bridge_ui_check.py (compact monitor window) ===" -ForegroundColor Cyan
+python "$here/bridge_ui_check.py"
 if ($LASTEXITCODE -ne 0) { $fail++ }
 
 Write-Host "`n=== pages_smoke.mjs (page wiring) ===" -ForegroundColor Cyan

@@ -7,9 +7,11 @@ CLI flags, the handler, the watchdog task and static file serving has to work.
 
 Skipped (exit 0) when no MIDI port is available, since the bridge refuses to start without one.
 """
-import os, subprocess, sys, time, urllib.request
+import os, socket, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "bridge"))
+import server                                  # for the socket-binding checks below
 PORT = 8791
 fails = []
 def check(name, ok, detail=""):
@@ -60,6 +62,56 @@ try:
             check("serves the debug page", "segInterp" in lab and "vibrato-lab.js?v=" in lab, f"{len(lab)} bytes")
             ws_check = fetch("/vibrato-lab.js")
             check("serves the debug page script", "depthTrim" in ws_check, f"{len(ws_check)} bytes")
+
+            # ── the reported bug: a second instance must NOT silently share the port ──
+            # With SO_REUSEADDR (the old behaviour on Windows) a second Bridge bound the same
+            # port happily, so the phone's connection went to the *leftover* process while the
+            # new window showed "running" with zero clients. It has to fail, loudly.
+            second = subprocess.run(
+                [sys.executable, os.path.join(ROOT, "bridge", "server.py"), "--no-gui",
+                 "--no-ssl", "--port", str(PORT), "--pb-idle-ms", "300"],
+                cwd=os.path.join(ROOT, "bridge"), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=40)
+            check("a second instance refuses the busy port",
+                  second.returncode != 0 and "已被占用" in (second.stdout + second.stderr),
+                  f"exit={second.returncode}, "
+                  + next((l for l in (second.stdout + second.stderr).splitlines() if "占用" in l), "no message"))
+            still = fetch("/status")            # and the first one kept running
+            check("the first instance is undisturbed", '"clients"' in still, f"{len(still)} bytes")
+
+            # ── stop/start must release the port immediately ──
+            # Stopping the server closes the phone's socket first, which leaves the port in
+            # TIME_WAIT. An exclusive bind refuses that, so the next START used to fail with
+            # "端口已被占用". The fallback (nobody listening ⇒ reuse allowed) is what makes an
+            # immediate restart work; this reproduces exactly that state.
+            port2 = PORT + 1
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            srv.bind(("127.0.0.1", port2)); srv.listen(4)
+            cli = socket.create_connection(("127.0.0.1", port2))
+            conn, _ = srv.accept()
+            conn.close()                        # server closes first ⇒ server-side TIME_WAIT
+            cli.close(); srv.close()
+            time.sleep(0.3)
+            try:
+                again = server.bind_server_socket("127.0.0.1", port2)
+                ok, detail = True, "立即重新绑定成功（TIME_WAIT 被容忍）"
+                again.close()
+            except OSError as e:
+                ok, detail = False, str(e)
+            check("stop/start: 端口立刻可重新绑定", ok, detail)
+            # Document (not assert — this varies by Windows version) that the pure exclusive
+            # bind really is what fails here, i.e. the fallback is load-bearing.
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                probe.bind(("127.0.0.1", port2))
+                print("      注：本机纯独占绑定在这种状态下也能成功（版本差异），回退仍保留以防万一")
+            except OSError as e:
+                print(f"      注：本机纯独占绑定在此状态下失败（{e.winerror if hasattr(e, 'winerror') else e}）"
+                      f"——这正是需要回退的原因")
+            finally:
+                probe.close()
 finally:
     proc.terminate()
     try:
@@ -67,5 +119,5 @@ finally:
     except subprocess.TimeoutExpired:
         proc.kill()
 
-print(f"\n{5 - len(fails)}/5 checks passed")
+print(f"\n{8 - len(fails)}/8 checks passed")
 sys.exit(1 if fails else 0)

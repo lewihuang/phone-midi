@@ -10,6 +10,7 @@ import ctypes
 import json
 import math
 import os
+import re
 import socket
 import ssl
 import sys
@@ -526,6 +527,82 @@ def _local_ip():
     ips = _local_ips()
     return ips[0] if ips else "127.0.0.1"
 
+# 窗口尺寸的持久化。
+# 只记**精简模式**的尺寸与位置：它是放在 DAW 角落里的监看窗，位置必须稳定；标准窗口每次
+# 回到默认位置（居中）即可，用户明确要求不要记忆它。
+WINDOW_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "window.json"
+
+def load_window_prefs() -> dict:
+    try:
+        with open(WINDOW_PREFS, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = {}
+        for key in ("compact", "compact_pos"):
+            v = data.get(key)
+            if isinstance(v, list) and len(v) == 2 and all(isinstance(n, (int, float)) for n in v):
+                out[key] = [int(v[0]), int(v[1])]
+        return out
+    except Exception:
+        return {}
+
+def save_window_prefs(prefs: dict):
+    """Best effort: a window that cannot remember its size must still close normally."""
+    try:
+        WINDOW_PREFS.parent.mkdir(parents=True, exist_ok=True)
+        with open(WINDOW_PREFS, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("保存窗口尺寸失败：%s", e)
+
+def _port_in_use(host: str, port: int) -> bool:
+    """Is something already listening there? (Cheap TCP connect on the phone's own port.)"""
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.6)
+            return s.connect_ex((probe_host, port)) == 0
+    except OSError:
+        return False
+
+def bind_server_socket(host: str, port: int, backlog: int = 128):
+    """Bind the listening socket, balancing two Windows behaviours that pull opposite ways.
+
+    1. `SO_REUSEADDR` on Windows does **not** mean "reuse an address in TIME_WAIT" the way it
+       does on Unix: it lets a *second* process bind the same address, and connections are then
+       handed to an arbitrary one of the two. That is how a leftover Bridge keeps serving while
+       a freshly started one shows a URL and "running" with zero clients — the phone connects to
+       the *old* process. So the first choice is the exclusive flag (set before bind).
+    2. But `SO_EXCLUSIVEADDRUSE` also refuses a port that *lingering connections* still hold in
+       TIME_WAIT — exactly what a stop/start cycle leaves behind (the server closes the phone's
+       socket first), so the next START failed with "port in use" for minutes.
+
+    Resolution: check whether somebody is actually *listening* first (that is the case worth
+    refusing). Nobody listening + exclusive bind fails ⇒ it is only TIME_WAIT ⇒ bind with
+    SO_REUSEADDR so an immediate restart works.
+
+    Raises OSError; the message says which of the two cases it was.
+    """
+    if _port_in_use(host, port):
+        raise OSError(f"端口 {port} 已被占用：已经有一个 Bridge 在监听（手机的连接会进那一个）")
+
+    exclusive = hasattr(socket, "SO_EXCLUSIVEADDRUSE")
+    opts = [socket.SO_EXCLUSIVEADDRUSE, socket.SO_REUSEADDR] if exclusive else [socket.SO_REUSEADDR]
+    last = None
+    for opt in opts:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, opt, 1)
+            s.bind((host, port)); s.listen(backlog)
+            return s
+        except OSError as e:
+            last = e
+            s.close()
+            # Only fall through to the reuse flag when nobody is listening: that means the
+            # port is merely held by connections in TIME_WAIT from a previous stop.
+            if _port_in_use(host, port):
+                raise OSError(f"端口 {port} 已被占用：已经有一个 Bridge 在监听（手机的连接会进那一个）")
+    raise last
+
 # ── GUI ─────────────────────────────────────────────────────────────────────
 # Industrial: #0B0C0A surface, mono type, #00E676 accent, flat structure
 
@@ -542,11 +619,18 @@ FG_DIM = "#5C645E"
 GREEN = "#00E676"
 AMBER = "#FFB800"
 RED = "#FF3B30"
+FONT_MONO_MID = ("Consolas", 18, "bold")   # 精简模式的值，够大又省高度
+# 精简模式：细长条。默认高度按内容给足（值那一行 + 细进度条 + 留白），下限比默认再矮一点，
+# 这样"再压矮一点"是用户自己能拖的事，不必改代码。
+COMPACT_MIN_W, COMPACT_MIN_H = 420, 84
+COMPACT_DEF_H = 108
+COMPACT_BAR_H = 26          # 固定厚度：不再随窗口高度撑满（原先 150 高的窗口里约 78 px）
 
 class BridgeApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Phone MIDI Bridge")
+        self._win_size = (480, 420)
         self.root.geometry("480x420")
         self.root.configure(bg=BG)
         self.root.minsize(400, 340)
@@ -557,14 +641,28 @@ class BridgeApp:
         self._handler = None
         self._runner = None
         self._status_timer = None
+        self._sock = None
+        self._busy = None            # 'start' | 'stop' while a worker is doing the work
+        self._start_result = None
+        self._stop_done = False
+        self._ssl_pair = None        # TLS context is built once per run, not per START
+        self._win_prefs = load_window_prefs()   # sizes remembered from the last run
         # Same dead-man timer as the CLI: a phone that goes quiet must not leave the DAW bent.
         self._pb_idle_sec = 0.5
+        # 精简模式（置顶，只看当前值与进度条）。尺寸只在本次运行内记住，不落盘。
+        self._compact = False
+        self._compact_geom = None
         self._build_setup()
 
     # ── Setup View ────────────────────────────────────────────────────────
     def _build_setup(self):
         self._clear()
         self._mode = "setup"
+        self.root.overrideredirect(False)
+        self.root.title("手机推子 · Phone MIDI Bridge")
+        self.root.attributes("-topmost", False)
+        self.root.minsize(400, 340)
+        self._set_geometry(self._default_spec(480, 420))
 
         # Header
         tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
@@ -621,6 +719,10 @@ class BridgeApp:
                   font=FONT_BOLD, bg=SURFACE, fg=FG_DIM, activebackground="#252525",
                   relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10).pack(side=tk.LEFT, padx=6)
 
+        # 后台工作的提示（启动/停止不再卡住窗口，所以要说一句在做什么）
+        self._busy_lbl = tk.Label(self.root, text="", font=FONT_HINT, bg=BG, fg=AMBER)
+        self._busy_lbl.pack(pady=(0, 6))
+
         # Author
         tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
@@ -628,6 +730,70 @@ class BridgeApp:
     def _build_running(self, device_name, port, protocol):
         self._clear()
         self._mode = "running"
+        self._device_name, self._port, self._protocol = device_name, port, protocol
+        compact = self._compact
+
+        if compact:
+            # 精简模式：只看当前值与进度条；无标题栏、置顶、可拖动、右下角可拉伸。
+            self.root.title("手机推子 · 精简")
+            self.root.overrideredirect(True)          # 去掉标题栏
+            self.root.attributes("-topmost", True)    # 否则会被 DAW 盖住
+            # The expanded view sets minsize(400, 340); leaving it in place silently clamped
+            # the compact height to 340 (measured on the user's screen as a 630x510 window
+            # instead of a 420x150 bar). Minimum and default must move together.
+            self.root.minsize(COMPACT_MIN_W, COMPACT_MIN_H)
+            self._set_geometry(self._compact_spec())
+
+            body = tk.Frame(self.root, bg=BG, highlightbackground=BORDER, highlightthickness=1)
+            body.pack(fill=tk.BOTH, expand=True)
+
+            top = tk.Frame(body, bg=BG)
+            top.pack(fill=tk.X, padx=10, pady=(6, 0))
+            self._mon_value = tk.Label(top, text="—", font=FONT_MONO_MID, bg=BG, fg=FG)
+            self._mon_value.pack(side=tk.LEFT)
+            self._mon_back = tk.Label(top, text="展开", font=FONT_HINT, bg=SURFACE, fg=FG_DIM,
+                                      padx=8, pady=2, cursor="hand2",
+                                      highlightbackground=BORDER, highlightthickness=1)
+            self._mon_back.pack(side=tk.RIGHT)
+            self._mon_back.bind("<Button-1>", lambda _e: self._toggle_compact())
+
+            # 进度条是固定厚度的细条（不随窗口高度撑满）：原先它吃掉剩余空间，150 高的窗口里
+            # 有 ~78 px 厚。剩下的高度留白，拉伸窗口不会把条变粗。
+            self._bar = tk.Canvas(body, bg=SURFACE, highlightthickness=0, width=1,
+                                  height=COMPACT_BAR_H)
+            self._bar.pack(fill=tk.X, padx=10, pady=(3, 6))
+            self._bar_bg = self._bar.create_rectangle(0, 0, 0, 0, fill="#1E211D", outline="")
+            self._bar_fill = self._bar.create_rectangle(0, 0, 0, 0, fill=GREEN, outline="")
+            self._bar_mid = self._bar.create_line(0, 0, 0, 0, fill=FG_DIM, width=1)
+            self._bar.bind("<Configure>", lambda _e: self._draw_bar(*self._bar_args))
+            self._bar_args = (None, "cc")
+            tk.Frame(body, bg=BG).pack(fill=tk.BOTH, expand=True)   # 多余高度留白
+
+            # 没有标题栏就得自己实现拖动与拉伸
+            grip = tk.Label(body, text="◢", font=("Consolas", 9), bg=BG, fg=FG_DIM, cursor="size_nw_se")
+            grip.place(relx=1.0, rely=1.0, anchor="se")
+            for widget in (body, top, self._mon_value, self._bar):
+                widget.bind("<Button-1>", self._drag_start)
+                widget.bind("<B1-Motion>", self._drag_move)
+            grip.bind("<Button-1>", self._resize_start)
+            grip.bind("<B1-Motion>", self._resize_move)
+
+            # The widgets decide the window size when it is overrideredirect (no window manager
+            # to argue with) — a bare tk.Canvas alone asks for ~378x265, which is exactly why
+            # the window once came out taller than requested. The bar is now a fixed thin
+            # canvas and the requested geometry is re-applied as the last word.
+            self.root.update_idletasks()
+            self._set_geometry(self._compact_spec())
+
+            self._status_timer = self.root.after(50, self._poll_status)
+            return
+
+        self.root.overrideredirect(False)
+        self.root.title("手机推子 · Phone MIDI Bridge")
+        self.root.minsize(400, 340)
+        self.root.attributes("-topmost", False)
+        # 展开态恢复上次关闭时的尺寸（没有记录过就还是原来的 480x420）
+        self._set_geometry(self._default_spec(480, 420))
 
         # Header
         tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
@@ -655,33 +821,212 @@ class BridgeApp:
         self._indicator.pack(pady=(4, 4))
         self._dot = self._indicator.create_oval(0, 0, 10, 10, fill=GREEN, outline="")
 
+        # 精简模式：只显示当前值 + 进度条，置顶，方便放在 DAW 角落观察
+        tk.Button(self.root, text="精简模式（置顶）", command=self._toggle_compact,
+                  font=FONT, bg=SURFACE, fg=FG, activebackground=BORDER,
+                  relief=tk.FLAT, padx=14, pady=4, cursor="hand2").pack(pady=(4, 0))
+
         # Stop button
-        tk.Button(self.root, text="STOP", command=self._on_stop,
-                  font=FONT_BOLD, bg=RED, fg=BG, activebackground="#D32F2F",
-                  relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10).pack(pady=(12, 20))
+        self._stop_btn = tk.Button(self.root, text="STOP", command=self._on_stop,
+                                   font=FONT_BOLD, bg=RED, fg=BG, activebackground="#D32F2F",
+                                   relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10)
+        self._stop_btn.pack(pady=(10, 20))
 
         tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
         # Start status polling
         self._status_timer = self.root.after(500, self._poll_status)
 
+    def _toggle_compact(self):
+        if self._compact:
+            self._compact_geom = self.root.geometry()   # 尺寸 + 位置，退出时落盘
+        self._compact = not self._compact
+        if self._mode == "running":
+            self._build_running(self._device_name, self._port, self._protocol)
+        else:
+            self._build_setup()
+
+    # ── 无标题栏窗口的拖动与拉伸 ──────────────────────────────────────────────
+    def _set_geometry(self, spec: str):
+        """Apply a geometry spec and remember the requested size/position.
+
+        Tk's own geometry()/winfo_* only report the truth once a window has been mapped,
+        which it deliberately is not during the automated checks — so keep the values we asked
+        for as well, and let the checks assert on those.
+        """
+        self.root.geometry(spec)
+        m = re.match(r"(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?", spec)
+        if m:
+            self._win_size = (int(m.group(1)), int(m.group(2)))
+            if m.group(3) is not None:
+                self._win_pos = (int(m.group(3)), int(m.group(4)))
+
+    def _fit_wh(self, size, min_w, min_h):
+        """Clamp a remembered size so it still fits the screen and the mode's minimum."""
+        try:
+            w, h = int(size[0]), int(size[1])
+        except (TypeError, ValueError, IndexError):
+            w, h = min_w, min_h
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        return max(min_w, min(w, sw)), max(min_h, min(h, sh))
+
+    def _fit(self, size, min_w, min_h) -> str:
+        w, h = self._fit_wh(size, min_w, min_h)
+        return f"{w}x{h}"
+
+    def _screen(self):
+        return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
+    def _default_spec(self, w: int, h: int) -> str:
+        """标准窗口的默认位置：屏幕居中（每次打开都回到这里，不记忆）。"""
+        sw, sh = self._screen()
+        return f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}"
+
+    def _clamp_pos(self, pos, w, h):
+        """Keep the whole compact window on screen (换显示器/分辨率后不会丢)。"""
+        sw, sh = self._screen()
+        try:
+            x, y = int(pos[0]), int(pos[1])
+        except (TypeError, ValueError, IndexError):
+            return max(0, (sw - w) // 2), max(0, (sh - h) // 2)
+        return max(0, min(x, max(0, sw - w))), max(0, min(y, max(0, sh - h)))
+
+    def _compact_spec(self) -> str:
+        """精简窗口：尺寸与位置都沿用上次关闭时的值（可以与标准窗口不同）。"""
+        w, h = self._fit_wh(self._compact_geom_size() or self._win_prefs.get("compact")
+                            or [COMPACT_MIN_W, COMPACT_DEF_H], COMPACT_MIN_W, COMPACT_MIN_H)
+        pos = self._win_prefs.get("compact_pos")
+        x, y = self._clamp_pos(pos, w, h) if pos else self._clamp_pos(None, w, h)
+        return f"{w}x{h}+{x}+{y}"
+
+    def _compact_geom_size(self):
+        m = re.match(r"(\d+)x(\d+)", getattr(self, "_compact_geom", "") or "")
+        return [int(m.group(1)), int(m.group(2))] if m else None
+
+    def _capture_window(self):
+        """Record the compact window's size and position on the way out.
+
+        The standard window is deliberately *not* recorded: it always opens at its default
+        position. Called before any teardown, because stopping the server rebuilds the setup
+        view and would throw the compact geometry away.
+        """
+        try:
+            if self._compact:
+                w, h = self.root.winfo_width(), self.root.winfo_height()
+                if w > 1 and h > 1:                   # 1x1 = 未映射
+                    self._win_prefs["compact"] = [w, h]
+                    self._win_prefs["compact_pos"] = [self.root.winfo_x(), self.root.winfo_y()]
+            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", getattr(self, "_compact_geom", "") or "")
+            if m:
+                self._win_prefs["compact"] = [int(m.group(1)), int(m.group(2))]
+                self._win_prefs["compact_pos"] = [int(m.group(3)), int(m.group(4))]
+            save_window_prefs(self._win_prefs)
+        except Exception as e:
+            log.warning("记录窗口位置失败：%s", e)
+
+    def _window_xy(self):
+        """Current window origin. Read from the geometry string (what we last requested), not
+        winfo_x/y: the two disagree until the window is actually mapped, and the drag maths must
+        agree with what the geometry says or the window jumps on the first move."""
+        m = re.search(r"\+(-?\d+)\+(-?\d+)", self.root.geometry())
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        return self.root.winfo_x(), self.root.winfo_y()
+
+    def _drag_start(self, event):
+        x, y = self._window_xy()
+        self._drag_origin = (event.x_root - x, event.y_root - y)
+
+    def _drag_move(self, event):
+        if not getattr(self, "_drag_origin", None): return
+        dx, dy = self._drag_origin
+        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _resize_start(self, event):
+        self._resize_origin = (event.x_root, event.y_root,
+                               self.root.winfo_width(), self.root.winfo_height())
+
+    def _resize_move(self, event):
+        if not getattr(self, "_resize_origin", None): return
+        x0, y0, w0, h0 = self._resize_origin
+        w = max(COMPACT_MIN_W, w0 + (event.x_root - x0))
+        h = max(COMPACT_MIN_H, h0 + (event.y_root - y0))
+        self._set_geometry(f"{w}x{h}")
+
+    @staticmethod
+    def _value_text(out, connected: bool) -> str:
+        if not connected: return "—"
+        if not out: return "—"
+        o = out[0]
+        return f"PB {o['value']}" if o["cc"] == "PB" else f"CC{o['cc']} {o['value']}"
+
+    @staticmethod
+    def _bar_norm(out):
+        """Progress position from the mapped output alone: CC over its 0–127 range, pitch
+        bend around the centre of 14-bit space. No extra protocol field needed."""
+        if not out: return None, "cc"
+        o = out[0]
+        if o["cc"] == "PB":
+            return (o["value"] / 16383.0), "pb"
+        return (o["value"] / 127.0), "cc"
+
+    def _draw_bar(self, norm, kind):
+        w = max(1, self._bar.winfo_width()); h = max(1, self._bar.winfo_height())
+        self._bar.coords(self._bar_bg, 0, 0, w, h)
+        if norm is None:
+            self._bar.coords(self._bar_fill, 0, 0, 0, 0)
+            self._bar.itemconfigure(self._bar_mid, state="hidden")
+            return
+        if kind == "pb":
+            mid = w / 2.0
+            x = mid + (norm - 0.5) * w
+            self._bar.coords(self._bar_fill, min(mid, x), 0, max(mid, x), h)
+            self._bar.coords(self._bar_mid, mid, 0, mid, h)
+            self._bar.itemconfigure(self._bar_mid, state="normal")
+        else:
+            self._bar.coords(self._bar_fill, 0, 0, norm * w, h)
+            self._bar.itemconfigure(self._bar_mid, state="hidden")
+
     def _poll_status(self):
         if self._mode != "running": return
         if self._handler:
             cc = self._handler.last_cc_output
             n = self._handler.client_count
-            self._status_clients.config(text=f"clients: {n}")
-            if cc:
-                o = cc[0]; self._status_cc.config(text=f"CC{o['cc']} Ch{o['channel']+1} = {o['value']}")
-                # Pulse dot
-                hue = GREEN if o['value'] > 0 else FG_DIM
-                self._indicator.itemconfig(self._dot, fill=hue)
-            else: self._status_cc.config(text="cc: --")
-        self._status_timer = self.root.after(500, self._poll_status)
+            connected = n > 0
+            if self._compact:
+                norm, kind = self._bar_norm(cc) if connected else (None, "cc")
+                self._bar_args = (norm, kind)
+                self._mon_value.config(text=self._value_text(cc, connected))
+                self._draw_bar(norm, kind)
+            else:
+                self._status_clients.config(text=f"clients: {n}")
+                if cc:
+                    o = cc[0]; self._status_cc.config(text=f"CC{o['cc']} Ch{o['channel']+1} = {o['value']}")
+                    # Pulse dot
+                    hue = GREEN if o['value'] > 0 else FG_DIM
+                    self._indicator.itemconfig(self._dot, fill=hue)
+                else: self._status_cc.config(text="cc: --")
+        self._status_timer = self.root.after(50 if self._compact else 500, self._poll_status)
+
+    def _show_error(self, msg: str):
+        """Say it in the window: the packaged exe has no console, so a startup failure that
+        only reaches the log is invisible — the window must not claim to be running."""
+        log.error("%s", msg)
+        self._clear()
+        self._mode = "setup"
+        tk.Label(self.root, text="启动失败", font=FONT_H1, bg=BG, fg=RED).pack(pady=(24, 8))
+        tk.Label(self.root, text=msg, font=FONT, bg=BG, fg=FG, wraplength=420,
+                 justify="left").pack(padx=24)
+        tk.Button(self.root, text="返回", command=self._build_setup, font=FONT_BOLD, bg=SURFACE,
+                  fg=FG, relief=tk.FLAT, padx=24, pady=6, cursor="hand2").pack(pady=20)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
     def _clear(self):
         for w in self.root.winfo_children(): w.destroy()
+        for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
+                     "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
+                     "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var"):
+            if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
 
     def _on_start(self):
@@ -697,78 +1042,182 @@ class BridgeApp:
         port = int(self._port_var.get() or "8765")
         self._start_server(device_id, device_name, port)
 
-    def _start_server(self, device_id, device_name, port):
-        # Open MIDI
-        try:
-            self._midi = WinMidi(); self._midi.open(device_id=device_id)
-        except WinMidiError as e:
-            log.error("MIDI: %s", e); return
+    def _ssl_for(self, base_dir):
+        """Build the TLS context once per run.
 
-        base_dir = _base_dir()
-        config_path = base_dir / "config" / "default.json"
-        engine = MappingEngine(str(config_path))
-        self._handler = SensorHandler(engine, self._midi)
-
-        # SSL
-        ssl_context = None; protocol = "http"
+        Doing this on every START cost ~0.7 s of frozen window (measured), almost all of it
+        importing `cryptography` inside cert generation/checks.
+        """
+        if self._ssl_pair is not None: return self._ssl_pair
+        context, protocol = None, "http"
         try:
             cp, kp = _ensure_cert(base_dir)
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(cp, kp); protocol = "https"
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            context.load_cert_chain(cp, kp); protocol = "https"
         except Exception as e:
             log.warning("SSL skipped: %s", e)
             log.warning(_HTTP_SENSOR_WARNING)
+        self._ssl_pair = (context, protocol)
+        return self._ssl_pair
 
-        # Build app
-        app = web.Application()
-        app["handler"] = self._handler; app["midi"] = self._midi; app["engine"] = engine
-        app.router.add_get("/ws", self._handler.handle)
-        app.router.add_get("/status", handle_status)
+    def _start_server(self, device_id, device_name, port):
+        """Start everything on a worker thread: this window must never stop responding.
 
-        web_dir = base_dir / "web"
-        if not web_dir.exists(): web_dir = base_dir.parent / "web"
-        if web_dir.exists():
-            ipath = web_dir / "index.html"
-            async def _idx(r): return web.FileResponse(ipath)
-            app.router.add_get("/", _idx)
-            app.router.add_static("/", web_dir, show_index=False)
+        Measured before this change: START blocked the UI thread for ~0.7 s (cert work) and
+        STOP for ~5 s (aiohttp's cleanup draining a connected phone), which is exactly the
+        "未响应" the user reported. The Tk thread only polls for the result now.
+        """
+        if self._busy: return
+        self._busy = "start"
+        self._start_result = None
+        self._set_busy("正在启动…")
 
-        log.info("Starting on %s://0.0.0.0:%d", protocol, port)
+        def _work():
+            try:
+                midi = WinMidi(); midi.open(device_id=device_id)
+            except WinMidiError as e:
+                self._start_result = {"ok": False, "msg": f"无法打开 MIDI 端口：{e}"}; return
+            except Exception as e:
+                self._start_result = {"ok": False, "msg": f"无法打开 MIDI 端口：{e}"}; return
+            try:
+                base_dir = _base_dir()
+                engine = MappingEngine(str(base_dir / "config" / "default.json"))
+                handler = SensorHandler(engine, midi, pb_idle_sec=self._pb_idle_sec)
+                ssl_context, protocol = self._ssl_for(base_dir)
+                app = web.Application()
+                app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
+                app.router.add_get("/ws", handler.handle)
+                app.router.add_get("/status", handle_status)
+                web_dir = base_dir / "web"
+                if not web_dir.exists(): web_dir = base_dir.parent / "web"
+                if web_dir.exists():
+                    ipath = web_dir / "index.html"
+                    async def _idx(r): return web.FileResponse(ipath)
+                    app.router.add_get("/", _idx)
+                    app.router.add_static("/", web_dir, show_index=False)
+                sock = bind_server_socket("0.0.0.0", port)
+            except Exception as e:
+                try: midi.close()
+                except Exception: pass
+                msg = str(e)
+                if isinstance(e, OSError) and _port_in_use("0.0.0.0", port):
+                    msg = (f"端口 {port} 已被占用：已经有一个「手机推子」在运行，"
+                           f"手机的连接进的是那一个。请先关闭它（或换一个端口）再启动。")
+                self._start_result = {"ok": False, "msg": msg}; return
 
-        # Server thread
-        self._stop_event = threading.Event()
-        def _run():
-            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-            runner = web.AppRunner(app)
-            loop.run_until_complete(runner.setup())
-            # Create socket with SO_REUSEADDR to avoid TIME_WAIT sticky port
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("0.0.0.0", port))
-            site = web.SockSite(runner, sock, ssl_context=ssl_context)
-            loop.run_until_complete(site.start())
-            if self._handler and self._handler.pb_idle_sec > 0:
-                asyncio.ensure_future(self._handler.pb_watchdog(), loop=loop)
-            self._loop = loop; self._runner = runner
+            log.info("Starting on %s://0.0.0.0:%d", protocol, port)
+            thread = threading.Thread(target=self._serve, args=(app, sock, ssl_context,
+                                                               handler), daemon=True)
+            self._start_result = {"ok": True, "midi": midi, "handler": handler, "sock": sock,
+                                  "thread": thread, "protocol": protocol,
+                                  "name": device_name, "port": port}
+            thread.start()
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._poll_start()
+
+    def _serve(self, app, sock, ssl_context, handler):
+        """Server thread: own the loop, the runner and the listening socket."""
+        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+        runner = web.AppRunner(app)
+        loop.run_until_complete(runner.setup())
+        loop.run_until_complete(web.SockSite(runner, sock, ssl_context=ssl_context).start())
+        if handler.pb_idle_sec > 0:
+            asyncio.ensure_future(handler.pb_watchdog(), loop=loop)
+        self._loop = loop; self._runner = runner
+        try:
             loop.run_forever()
-        self._server_thread = threading.Thread(target=_run, daemon=True)
-        self._server_thread.start()
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
 
-        self._build_running(device_name, port, protocol)
+    def _poll_start(self):
+        if self._start_result is None:
+            if self._busy == "start": self.root.after(50, self._poll_start)
+            return
+        res, self._start_result, self._busy = self._start_result, None, None
+        self._set_busy(None)
+        if not res.get("ok"):
+            self._show_error(res.get("msg") or "启动失败")
+            return
+        self._midi, self._handler = res["midi"], res["handler"]
+        self._sock, self._server_thread = res["sock"], res["thread"]
+        self._build_running(res["name"], res["port"], res["protocol"])
 
     def _on_stop(self):
-        if self._loop and self._runner:
-            async def _shutdown():
-                await self._runner.cleanup()
-                for task in asyncio.all_tasks(self._loop): task.cancel()
-                self._loop.stop()
-            asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
-            self._loop = None; self._runner = None
-        if self._midi: self._midi.close(); self._midi = None
-        self._handler = None; self._server_thread = None
+        """Tear down on a worker thread; the window switches views when it is really done."""
+        if self._busy: return
+        loop, runner, sock, thread = self._loop, self._runner, self._sock, self._server_thread
+        midi, handler = self._midi, self._handler
+        self._loop = self._runner = self._sock = self._server_thread = None
+        self._midi = self._handler = None
+        self._busy = "stop"
+        self._stop_done = False
+        self._set_busy("正在停止…")
+
+        def _work():
+            if loop and runner:
+                async def _shutdown():
+                    # Close the listeners first (this is what frees the port), then stop
+                    # serving. `runner.cleanup()` alone drains live connections and can block
+                    # for seconds while the phone is still attached — bounded here instead.
+                    try:
+                        await runner.shutdown()
+                    except Exception as e:
+                        log.warning("停止监听时出错：%s", e)
+                    try: sock.close()
+                    except OSError: pass
+                    try:
+                        await asyncio.wait_for(runner.cleanup(), timeout=1.0)
+                    except Exception:
+                        pass                        # draining leftovers is best-effort
+                    for task in asyncio.all_tasks(loop):
+                        if task is not asyncio.current_task(loop): task.cancel()
+                    loop.call_soon(loop.stop)
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+                    fut.result(timeout=3)
+                except Exception as e:
+                    log.warning("等待服务器停止：%s", e)
+            if thread and thread.is_alive():
+                thread.join(timeout=3)
+            if midi:
+                try: midi.close()
+                except Exception: pass
+            self._stop_done = True
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._poll_stop()
+
+    def _poll_stop(self):
+        if not self._stop_done:
+            self.root.after(50, self._poll_stop)
+            return
+        self._busy = None
+        self._stop_done = False
+        self._set_busy(None)
         self._build_setup()
 
+    def _set_busy(self, label):
+        """Announce background work without blocking anything.
+
+        Every reference is allowed to be stale: the label lives in the setup view and is gone
+        once the running view is up (a destroyed widget raises TclError on config), so this
+        must never be the thing that breaks STOP.
+        """
+        def _apply(widget, **kw):
+            try: widget.config(**kw)
+            except (AttributeError, tk.TclError): pass
+        _apply(getattr(self, "_busy_lbl", None), text=label or "")
+        if hasattr(self, "_stop_btn"):
+            _apply(self._stop_btn, text="停止中…" if label else "STOP",
+                   state=(tk.DISABLED if label else tk.NORMAL))
+
     def _on_quit(self):
+        self._capture_window()                # 先记精简窗尺寸与位置，再拆服务器（拆的过程会切回设置页）
         if self._mode == "running": self._on_stop()
         self.root.destroy()
 
@@ -835,9 +1284,15 @@ def _cli_mode(args):
     else:
         log.info("PB 守护已关闭（--pb-idle-ms 0）：手机静默时 DAW 会停在最后的弯音值")
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((args.host, args.port))
+        try:
+            sock = bind_server_socket(args.host, args.port)
+        except OSError as e:
+            if _port_in_use(args.host or "0.0.0.0", args.port):
+                log.error("端口 %d 已被占用：已经有一个 Bridge 在运行（手机的连接会进那一个）。"
+                          "请先关闭它，或用 --port 换一个端口。", args.port)
+            else:
+                log.error("端口 %d 无法监听：%s", args.port, e)
+            sys.exit(1)
         web.run_app(app, sock=sock, ssl_context=ssl_context, print=None)
     except KeyboardInterrupt: log.info("Shutdown")
     finally: midi.close()
