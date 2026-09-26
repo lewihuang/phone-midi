@@ -271,7 +271,7 @@ a { color: var(--blue); text-decoration: none; }
 .shake-note { font-size: 13px; color: var(--label-2); text-align: center; }
 
 /* ── 快捷键面板（pad.html） ─────────────────────────────────────────────── */
-/* 屏幕上的按钮：纯色填充 + 白字（iOS 主屏图标那种），颜色由布局逐格给 */
+/* 屏幕上的按钮：纯色填充 + 字色跟着填充走（浅底深字 / 深底白字，由 Bridge 逐格下发 ink） */
 .cell {
   position: relative;
   display: flex; align-items: center; justify-content: center;
@@ -279,23 +279,25 @@ a { color: var(--blue); text-decoration: none; }
   border-radius: var(--radius-cell);
   overflow: hidden;
   background: var(--fill);
-  color: #fff;
+  color: var(--label);          /* 布局到达前/脚本没跑起来时的兜底：深字配浅底 */
   font-size: clamp(15px, 5vw, 26px);
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.2;
   text-align: center;
   word-break: break-word;
-  /* 用户能挑任意颜色，浅色填充上纯白字会发飘，加一层很淡的阴影兜底 */
+  /* 中间调填充（绿/橙那几档）上字会发飘，加一层很淡的阴影兜底 */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
   transition: transform 70ms ease, filter 70ms ease;
 }
-/* 按下：缩小 + 变深 + 白色内圈（三件事同时发生，盲按也能感觉到）。
-   用**变深**而不是变亮：填充色可能是浅色，浅色再提亮就贴到白色、按下去几乎没有变化。 */
+/* 按下：缩小 + 变深 + 内圈（三件事同时发生，盲按也能感觉到）。
+   两个细节都是被真机逼出来的：
+   · 用**变深**而不是变亮——填充色可能是浅色，浅色再提亮就贴到白色、按下去几乎没有变化；
+   · 内圈用 **currentColor**——它永远是字色，于是深底上是白圈、白底上是深圈，两端都看得见。 */
 .cell.pressed { transform: scale(0.94); filter: brightness(0.82) saturate(1.05);
-                box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.95); }
+                box-shadow: inset 0 0 0 3px currentColor; }
 /* 松手后短暂保留的"已发出"痕迹：轻点一下也能看见 */
-.cell.fired { box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.5); }
+.cell.fired { box-shadow: inset 0 0 0 3px currentColor; }
 
 /* 页签 = iOS 分段控件（Segment Control） */
 #tabs {

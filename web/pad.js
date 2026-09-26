@@ -20,10 +20,14 @@
   // Row-major order is what ties a slot to its trigger id; the phone never shows the note
   // number (only the PC editor does) and never computes one — the Bridge maps id -> note.
   const RECONNECT_MS = 2000;
-  // Only used while a layout has not arrived (offline / first paint): neutral gray, matching
-  // the Bridge default. Dark navy here was a leftover from the dark theme and looked wrong on
-  // the light gray page.
-  const DEFAULT_COLOR = '#8e8e93';
+  // Only used while a layout has not arrived (offline / first paint): white, matching the Bridge
+  // default and the light page. Earlier defaults (dark navy, then mid grey) were leftovers from
+  // the dark theme.
+  const DEFAULT_COLOR = '#ffffff';
+  const DEFAULT_INK = '#1c1c1e';
+  // Haptics: a tap confirms itself in the hand, not only on the screen. Android/Chrome vibrate;
+  // iOS Safari has no Vibration API at all, so this is "buzz if you can" — never required.
+  const HAPTIC_MS = 10;
 
   const elTitle = document.getElementById('pageTitle');
   const elGrid = document.getElementById('grid');
@@ -46,6 +50,12 @@
   function showError(msg) {
     const text = msg || '';
     if (elErr.textContent !== text) elErr.textContent = text;
+  }
+
+  /** Buzz once if the device can. Never let a missing/blocked API break the press path. */
+  function haptic() {
+    if (!navigator.vibrate) return;
+    try { navigator.vibrate(HAPTIC_MS); } catch (_) { /* unsupported or blocked: fine */ }
   }
 
   function setConn(state, text) {
@@ -89,8 +99,13 @@
       const c = (cfg && Array.isArray(cfg.cells)) ? cfg.cells[slot] : null;
       const text = (c && typeof c.text === 'string') ? c.text : '';
       const color = (c && typeof c.color === 'string' && c.color) ? c.color : DEFAULT_COLOR;
+      // The Bridge sends the finished ink colour, so a light fill gets dark text without the phone
+      // having to reason about colours. No ink on the wire (older layout) -> the dark one, which
+      // matches the white default fill.
+      const ink = (c && typeof c.ink === 'string' && c.ink) ? c.ink : DEFAULT_INK;
       if (cell.label.textContent !== text) cell.label.textContent = text;
       if (cell.el.style.background !== color) cell.el.style.background = color;
+      if (cell.el.style.color !== ink) cell.el.style.color = ink;
       // 音符编号只在 PC 端显示（手机上放角标会干扰"一眼认出这个按钮"）
     }
     renderTabs();
@@ -107,6 +122,7 @@
         b.className = 'tab';
         b.addEventListener('click', () => {
           if (page === i) return;
+          haptic();                 // 翻页也要有"按到了"的确认（用户要求）
           releaseAll();
           page = i;
           updatePage();
@@ -138,8 +154,7 @@
       try { cell.el.setPointerCapture(ev.pointerId); } catch (_) { /* not fatal */ }
       cell.el.classList.add('pressed');
       cell.el.classList.remove('fired');
-      // 有振动马达就顺手振一下（iOS Safari 没有这个 API，所以只是"能振就振"）
-      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+      haptic();                   // 手指按下的那一下，先确认，再发消息
       showError('');
       send({ kind: 'trigger', id, phase: 'down' });
     });

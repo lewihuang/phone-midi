@@ -70,10 +70,12 @@ function loadPage(page) {
   const { document, ids, nodes } = makeDom(page);
   const listeners = {};
   const sockets = [];
+  const buzzes = [];          // navigator.vibrate(ms) 的调用记录（"按下有没有震动确认"）
   const win = {
     document, location: { protocol: 'http:', host: '127.0.0.1:8765', search: '', href: 'http://x/' },
     history: { replaceState() {} },
-    navigator: { wakeLock: { request: async () => ({ addEventListener() {}, release() {} }) } },
+    navigator: { wakeLock: { request: async () => ({ addEventListener() {}, release() {} }) },
+                 vibrate: (ms) => buzzes.push(ms) },
     performance: { now: () => Date.now() },
     localStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
     sessionStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
@@ -104,7 +106,7 @@ function loadPage(page) {
   for (const f of files[page]) {
     vm.runInContext(fs.readFileSync(web(f), 'utf8'), ctx, { filename: f });
   }
-  return { win, ctx, ids, listeners, nodes, sockets };
+  return { win, ctx, ids, listeners, nodes, sockets, buzzes };
 }
 
 const results = [];
@@ -171,7 +173,7 @@ function check(name, ok, detail) {
 
 // ── the shortcut pad page (spec/shortcut-pad.md, ADR 0004) ───────────────────
 {
-  const { win, sockets } = loadPage('pad');
+  const { win, sockets, buzzes } = loadPage('pad');
   const grid = win.document.getElementById('grid');
   const tabs = win.document.getElementById('tabs');
   const cellText = (i) => grid.children[i].children[0].textContent;
@@ -203,14 +205,18 @@ function check(name, ok, detail) {
 
   press(0, 1);   // offline press
   check('pad: an offline press sends nothing', ws.sent.length === 0, `${ws.sent.length} message(s)`);
+  check('pad: an offline press does not buzz either',
+    buzzes.length === 0, '没发出去就不该给"已确认"的手感');
 
   ws.readyState = 1; ws.onopen();
   check('pad: connected clears the offline state',
     !grid.classList.contains('offline') && win.document.getElementById('conn').textContent === '已连接',
     win.document.getElementById('conn').textContent);
 
+  // 布局里带 ink（Bridge 算好的字色）：深底白字 / 白底深字，两端都要认
   ws.onmessage({ data: JSON.stringify({ type: 'pad_layout', layout: { pages: [
-    { title: '轨道颜色', cells: [{ text: '变红', color: '#b91c1c' }, { text: '变蓝', color: '#1d4ed8' }] },
+    { title: '轨道颜色', cells: [{ text: '变红', color: '#b91c1c', ink: '#ffffff' },
+                                 { text: '白键', color: '#ffffff', ink: '#1c1c1e' }] },
     { title: '走带', cells: [{ text: '播放' }] },
   ] } }) });
   check('pad: layout drives the title, cell text/colour and the tabs',
@@ -219,11 +225,19 @@ function check(name, ok, detail) {
     && tabs.children.length === 2 && !tabs.classList.contains('hidden')
     && tabs.children[0].textContent === '轨道颜色',
     `title='${win.document.getElementById('pageTitle').textContent}', tabs=${tabs.children.length}`);
+  check('pad: the ink from the layout is applied (light fill gets dark text)',
+    grid.children[0].style.color === '#ffffff' && grid.children[1].style.color === '#1c1c1e',
+    `深底 ${grid.children[0].style.color} / 白底 ${grid.children[1].style.color}`);
+  check('pad: a cell with no ink of its own falls back to the light default',
+    grid.children[1].style.background === '#ffffff' && grid.children[1].style.color === '#1c1c1e',
+    '没有颜色/字色的格子 = 白底深字，和页面是一套的');
 
   press(0, 2);
   check('pad: a press sends exactly one trigger for that cell',
     ws.sent.length === 1 && ws.sent[0].kind === 'trigger' && ws.sent[0].id === 0 && ws.sent[0].phase === 'down',
     JSON.stringify(ws.sent[0]));
+  check('pad: a press buzzes once (the hand confirms it too)',
+    buzzes.length === 1 && buzzes[0] > 0, `vibrate(${buzzes.join(', ')})`);
   release(0, 2);
   check('pad: release sends the matching up for the same id',
     ws.sent.length === 2 && ws.sent[1].id === 0 && ws.sent[1].phase === 'up',
@@ -233,7 +247,13 @@ function check(name, ok, detail) {
   check('pad: a second cell uses its own id', ws.sent[2].id === 1, JSON.stringify(ws.sent[2]));
   release(1, 3);
 
+  const beforeSwitch = buzzes.length;
   tabs.children[1].dispatch('click', {});
+  check('pad: switching pages buzzes as well',
+    buzzes.length === beforeSwitch + 1, `翻页 ${buzzes.length - beforeSwitch} 次震动`);
+  tabs.children[1].dispatch('click', {});    // 再点当前页：没换页就不该振
+  check('pad: re-tapping the page you are already on stays quiet',
+    buzzes.length === beforeSwitch + 1, '已在这一页 = 没有发生任何事 = 不给手感');
   check('pad: switching pages retitles and refills',
     cellText(0) === '播放'
     && win.document.getElementById('pageTitle').textContent === '走带',

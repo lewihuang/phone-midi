@@ -131,10 +131,10 @@ check("非法颜色一律退回默认（颜色会进手机的 style，不能放�
       all(c["color"] == server.PAD_COLORS[0] for c in bad_colors[:6]),
       f"6 种非法输入 -> {[c['color'] for c in bad_colors[:6]]}")
 
-# 默认色必须是浅色页面上不抢眼的那一档：默认色曾经是深蓝 #1e293b（深色主题时代的遗产），
-# 8 格全用它会把整片浅灰页面压成"暗底"——用户就是这么一眼看出来的。
-check("默认色是中性色，不是深色块",
-      server.pad_luma(server.PAD_COLORS[0]) > 0.4,
+# 默认色必须是**和浅灰页面一套的浅色**：默认色先后是深蓝 #1e293b（深色主题时代的遗产，
+# 8 格全用它会把整页压成"暗底"）和中灰 #8e8e93（在浅底上仍偏重）。现在是白色。
+check("默认色是浅色（和页面一套），不是深色块",
+      server.pad_luma(server.PAD_COLORS[0]) > 0.9,
       f"默认 {server.PAD_COLORS[0]} luma={server.pad_luma(server.PAD_COLORS[0]):.2f}")
 check("亮度只用于选字色：有界、单调、能吃掉 3 位 hex 与非法值",
       server.pad_luma("#000000") == 0.0 and server.pad_luma("#ffffff") == 1.0
@@ -142,6 +142,24 @@ check("亮度只用于选字色：有界、单调、能吃掉 3 位 hex 与非�
       and abs(server.pad_luma("#fff") - 1.0) < 1e-9
       and server.pad_luma("nonsense") == server.pad_luma(server.PAD_COLORS[0]),
       "浅底用深字、深底用白字，判断依据就是它")
+# 字色（ink）是**派生**的：浅底深字、深底白字。判断留在 Bridge 侧（手机是哑显示端）。
+check("字色跟着填充色走：白底深字、深蓝底白字、中间调取白字",
+      server.pad_ink_for("#ffffff") == server.PAD_INK_DARK
+      and server.pad_ink_for("#1e293b") == server.PAD_INK_LIGHT
+      and server.pad_ink_for("#34c759") == server.PAD_INK_LIGHT
+      and server.pad_ink_for("bogus") == server.pad_ink_for(server.PAD_COLORS[0]),
+      f"白->{server.pad_ink_for('#ffffff')} 深蓝->{server.pad_ink_for('#1e293b')}")
+_ink_layout = server.pad_clean_layout({"pages": [{"title": "T", "cells": [
+    {"text": "白", "color": "#ffffff", "note": 36},
+    {"text": "蓝", "color": "#1e293b", "note": 37},
+]}]})
+_ink_payload = server.pad_layout_payload(_ink_layout)
+check("发给手机的布局带派生字色，而**落盘的那份不带**",
+      _ink_payload["pages"][0]["cells"][0]["ink"] == server.PAD_INK_DARK
+      and _ink_payload["pages"][0]["cells"][1]["ink"] == server.PAD_INK_LIGHT
+      and "ink" not in _ink_layout["pages"][0]["cells"][0]
+      and _ink_payload["pages"][0]["cells"][0]["note"] == 36,
+      "存起来就会和 color 不同步（改色忘了改字色 = 白字白底），所以只在下发时派生")
 capped = server.pad_clean_layout({"pages": [{"title": "p%d" % i, "cells": []}
                                             for i in range(server.PAD_PAGES + 3)]})
 check("页数固定：多出来的页被丢掉（不增不删，永远 6 页）",

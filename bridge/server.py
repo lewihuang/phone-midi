@@ -398,7 +398,7 @@ class SensorHandler:
 
     async def broadcast_pad_layout(self):
         """Push the layout to every connected phone; a phone that is away gets it on connect."""
-        payload = {"type": "pad_layout", "layout": self.pad_layout}
+        payload = {"type": "pad_layout", "layout": pad_layout_payload(self.pad_layout)}
         for client in list(self._clients):
             try: await client.send_json(payload)
             except Exception: pass
@@ -410,7 +410,7 @@ class SensorHandler:
         try: await ws.send_json({"type": "config", "config": self.engine.config})
         except Exception: pass
         # The pad page is useless without a layout, so it is pushed before anything else happens.
-        try: await ws.send_json({"type": "pad_layout", "layout": self.pad_layout})
+        try: await ws.send_json({"type": "pad_layout", "layout": pad_layout_payload(self.pad_layout)})
         except Exception: pass
         try:
             async for msg in ws:
@@ -697,11 +697,15 @@ PAD_TEXT_MAX = 24
 # 编辑器里的**预设**颜色（不再是白名单）：用户可以用取色器或十六进制任意填（D20）。
 # 校验只看"是不是合法颜色"——因为这个字符串会被写进手机上的 style.background，
 # 放宽成任意 CSS 就是一条注入通道。
-# 默认值（[0]）是中性灰：浅色页面上不抢眼，用户想区分功能时再挑颜色。其余是 iOS 系统色的
-# 常用几档（默认色曾经是深蓝 #1e293b，那是深色主题时代的产物，在浅底上会把整页压暗）。
-PAD_COLORS = ("#8e8e93", "#007aff", "#34c759", "#ff9500",
+# 默认值（[0]）是**白色**：浅灰页面上像 iOS 分组列表里的白卡片/白键，和页面是一套的（D26）。
+# 其余是 iOS 系统色的常用几档（用户想区分功能时再挑；默认色先后换过深蓝 #1e293b、中性灰 #8e8e93，
+# 前者是深色主题时代的产物，后者在浅底上仍偏重）。
+PAD_COLORS = ("#ffffff", "#007aff", "#34c759", "#ff9500",
               "#ff3b30", "#5e5ce6", "#ff2d55", "#30b0c7")
 PAD_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+# 格子上的字：浅底配深字、深底配白字（阈值 0.6 是"中间偏亮"那一档）
+PAD_INK_DARK = "#1c1c1e"
+PAD_INK_LIGHT = "#ffffff"
 
 def pad_color_valid(color) -> bool:
     """只接受 #rgb / #rrggbb（颜色会进手机的 style.background，不能放开成任意 CSS）。"""
@@ -717,6 +721,22 @@ def pad_luma(color) -> float:
         c = "".join(ch * 2 for ch in c)
     r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+def pad_ink_for(color) -> str:
+    """字色跟着填充色走（手机端收到的就是成品）。判断留在 Bridge 侧：手机是哑显示端（D7/D12）。"""
+    return PAD_INK_DARK if pad_luma(color) > 0.6 else PAD_INK_LIGHT
+
+def pad_layout_payload(layout: dict) -> dict:
+    """发给手机的那份布局 = 存储结构 + 派生字段 `ink`。
+
+    **不落盘**：ink 完全由 color 决定，存起来就会和 color 不同步（改色忘了改字色 = 白字白底）。
+    """
+    return {"version": layout.get("version", 1), "pages": [
+        {"title": page.get("title", ""),
+         "cells": [dict(cell, ink=pad_ink_for(cell.get("color")))
+                   for cell in page.get("cells", [])]}
+        for page in layout.get("pages", [])
+    ]}
 # 界面上"面板与推子共用端口"的选项文字（共用会让音源轨跟着弹音，见 PAD_PREFS 上方的说明）
 PAD_SAME_PORT = "（与推子相同）"
 def pad_trigger_count() -> int:
