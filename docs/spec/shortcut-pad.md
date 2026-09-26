@@ -1,6 +1,8 @@
 # 快捷键面板（Shortcut Pad） — 方案与步骤分解
 
-> 状态：**需求梳理中**（2026-09-18 起）。已定 4 项见 §3，待定见 §8。
+> 状态：**v1 已实现**（2026-09-18）。13 条决策与 7 条验收见下；实现记录与测试见
+> [changelog 2026-09-18](../changelog/2026-09-18_shortcut-pad.md)，Nuendo 侧照做步骤见
+> [guide/nuendo-shortcut-pad.md](../guide/nuendo-shortcut-pad.md)。
 > 创建：2026-09-18
 > 关联：[ADR 0003](adr/0003-explicit-target-kind.md)（协议显式声明目标类型）、[ui-mode-centric.md](spec/ui-mode-centric.md)、`CONTEXT.md`
 

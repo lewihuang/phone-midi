@@ -43,6 +43,7 @@
 
 | 功能 | 工作量 | 说明 |
 |------|--------|------|
+| **快捷键面板** | 中 | ✅ 已实现（2026-09-18）：手机/平板当宏命令按钮阵列（4×2 = 8 格/页，可多页），PC 端镜像编辑并即时同步；按下发 Note 36+编号 → Nuendo MIDI Remote 映射到宏 → [spec](spec/shortcut-pad.md) · [ADR 0004](adr/0004-midi-note-triggers.md) · [设置指南](guide/nuendo-shortcut-pad.md) |
 | **XY Pad 触屏** | 中 | 屏幕二维控制面 |
 | **预设保存/加载** | 中 | 多套校准 / 映射预设 |
 | **Web 配置完整 UI** | 大 | 可视化编辑 mapping |
