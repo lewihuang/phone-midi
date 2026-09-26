@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>延迟诊断 — Phone MIDI CC</title>
-<link rel="stylesheet" href="ios.css?v=4">
+<link rel="stylesheet" href="ios.css?v=5">
 <style>
   /* 页面专属：单栏，卡片自上而下堆叠 */
   body { max-width: 460px; margin: 0 auto; }
@@ -99,17 +99,27 @@
   <h2>⑥ 本机能力自检 — 按键震动</h2>
   <p class="hint">
     快捷键面板按下时会调 <code>navigator.vibrate()</code> 做确认。这里直接问浏览器要答案：
-    API 在不在、上一次调用是"被拒"还是"已接受"——<b>看返回值就能分清是谁的问题</b>：
+    API 在不在、每次调用是"被拒"还是"已接受"——<b>看返回值就能分清是谁的问题</b>：
     返回 <code>false</code> = 调用被拒（页面不可见、或没有用户手势时会被拒）；
     返回 <code>true</code> 但手上没感觉 = 调用被接受了，是<b>系统层面</b>把震动压掉了
-    （静音/勿扰模式、系统设置里关了振动），或者这台设备没有马达。
+    （静音/勿扰、系统里关了触感、省电模式），或者这台设备的马达做不出这么短的脉冲。
   </p>
   <table class="kv">
     <tr><td class="k">震动 API</td><td class="v" id="vibApi">—</td></tr>
     <tr><td class="k">安全上下文（HTTPS）</td><td class="v dim" id="vibSecure">—</td></tr>
     <tr><td class="k">上次调用结果</td><td class="v dim" id="vibResult">还没试过</td></tr>
   </table>
-  <div class="row-btn"><button class="btn btn-sm" id="btnVib">试一下震动 200 ms</button></div>
+  <p class="hint" style="margin-top:12px">
+    下面按时长各试一次——<b>面板按键用的是 25 ms</b> 那一档。若只有长的几档能感觉到，
+    说明马达需要更长的启动时间，把它调长即可；若连 200 ms 都没感觉，那是系统把触感整体关掉了。
+  </p>
+  <div class="row-btn wrap-sm">
+    <button class="btn btn-sm" id="btnVib10">10 ms</button>
+    <button class="btn btn-sm" id="btnVib25">25 ms</button>
+    <button class="btn btn-sm" id="btnVib60">60 ms</button>
+    <button class="btn btn-sm" id="btnVib200">200 ms</button>
+    <button class="btn btn-sm" id="btnVibPat">节奏</button>
+  </div>
 </div>
 
 <p class="verdict" id="verdict">
@@ -121,6 +131,6 @@
 </p>
 
 <script src="fusion.js?v=23"></script>
-<script src="latency.js?v=3"></script>
+<script src="latency.js?v=4"></script>
 </body>
 </html>

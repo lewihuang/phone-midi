@@ -148,8 +148,10 @@ a { color: var(--blue); text-decoration: none; }
   color: var(--blue); font: inherit; font-size: 17px; font-weight: 500;
   cursor: pointer;
 }
-.btn-row, .row-btn { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+.btn-row, .row-btn { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
 .btn-row > .btn, .row-btn > .btn { flex: 1; }
+/* 自检按钮串（延迟页的震动时长那一排）会挤到两行，压一点横向内边距 */
+.row-btn.wrap-sm > .btn { flex: 0 1 auto; padding: 0 10px; }
 
 /* 发送中/已暂停：iOS 里"进行中"用绿色、"暂停"用灰色 */
 .btn.send-on { background: var(--green); }

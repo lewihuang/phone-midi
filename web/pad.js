@@ -27,7 +27,9 @@
   const DEFAULT_INK = '#1c1e26';
   // Haptics: a tap confirms itself in the hand, not only on the screen. Android/Chrome vibrate;
   // iOS Safari has no Vibration API at all, so this is "buzz if you can" — never required.
-  const HAPTIC_MS = 10;
+  // 25 ms 而不是 10 ms：真机上（安卓 Edge）10 ms 那一档在有些马达上根本做不出来——马达需要启动
+  // 时间，脉冲太短就等于没有。延迟页的自检可以把 10/25/60/200 ms 各试一次，用来判断该用哪一档。
+  const HAPTIC_MS = 25;
 
   const elTitle = document.getElementById('pageTitle');
   const elGrid = document.getElementById('grid');

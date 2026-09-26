@@ -169,16 +169,21 @@ function check(name, ok, detail) {
   check('latency page: measures the new chain instead',
     /id="driftMeasured"/.test(latHtml) && !!lat.win.document.getElementById('driftMeasured'),
     'accelerometer-vs-attitude drift readout present');
-  // 震动这条在真机上排查过一轮（安卓 Edge 上没感觉到），所以要有一处能直接读出"是没 API 还是被系统压掉"。
+  // 震动这条在真机上排查过一轮（安卓 Edge：API 可用、安全上下文 yes、手上没感觉），所以要有一处
+  // 能直接读出"是没 API、被拒、还是系统压掉了"，并且能逐档试出马达吃哪一档时长。
   const vibApi = lat.win.document.getElementById('vibApi');
   check('latency page: reports whether the device has the vibration API',
     /可用/.test(vibApi.textContent),
     `桩里 navigator.vibrate 存在 → ${vibApi.textContent}`);
-  lat.win.document.getElementById('btnVib').dispatch('click', {});
+  const vibDurations = ['btnVib10', 'btnVib25', 'btnVib60', 'btnVib200', 'btnVibPat']
+    .filter((id) => new RegExp(`id="${id}"`).test(latHtml));
+  check('latency page: offers one test per duration (10/25/60/200 ms + a pattern)',
+    vibDurations.length === 5, `${vibDurations.length} 档：${vibDurations.join(', ')}`);
+  lat.win.document.getElementById('btnVib25').dispatch('click', {});
   const vibResult = lat.win.document.getElementById('vibResult').textContent;
-  check('latency page: the vibrate self-test says what the return value means',
-    /已接受/.test(vibResult) && /静音/.test(vibResult),
-    vibResult.slice(0, 60) + '…');
+  check('latency page: the vibrate self-test reports the duration and what the return value means',
+    /25 ms/.test(vibResult) && /已接受/.test(vibResult) && /静音/.test(vibResult),
+    vibResult.slice(0, 64) + '…');
 }
 
 // ── the shortcut pad page (spec/shortcut-pad.md, ADR 0004) ───────────────────

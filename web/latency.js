@@ -52,7 +52,6 @@
   const elVibApi = document.getElementById('vibApi');
   const elVibSecure = document.getElementById('vibSecure');
   const elVibResult = document.getElementById('vibResult');
-  const elBtnVib = document.getElementById('btnVib');
 
   let running = false;
   let anchors = null;
@@ -299,8 +298,18 @@
   //   no API  -> iOS Safari (no Vibration API at all), or a browser that dropped it
   //   false   -> the call was refused (page not visible / no user gesture)
   //   true    -> accepted; a silent phone means the *system* muted it (silent / DND /
-  //              vibration switched off) or there is no motor — see MDN's vibrate() notes
+  //              vibration switched off / battery saver) or the motor cannot render a pulse
+  //              that short — which is why the durations are offered one by one.
   const vibSupported = typeof navigator.vibrate === 'function';
+
+  // 面板按键用的是 25 ms；这里把每一档都给出，好判断"马达能不能做出这么短的脉冲"。
+  const VIB_TESTS = [
+    ['btnVib10', '10 ms', 10],
+    ['btnVib25', '25 ms', 25],
+    ['btnVib60', '60 ms', 60],
+    ['btnVib200', '200 ms', 200],
+    ['btnVibPat', '节奏 [30,40,30]', [30, 40, 30]],
+  ];
 
   function reportVibrationApi() {
     elVibApi.textContent = vibSupported ? '可用' : '不可用（本浏览器没有 navigator.vibrate）';
@@ -308,21 +317,21 @@
     elVibSecure.textContent = window.isSecureContext ? '是' : '否（HTTP：不影响震动，但会影响唤醒锁等）';
   }
 
-  function testVibration() {
+  function testVibration(label, pattern) {
     if (!vibSupported) {
-      elVibResult.textContent = '本浏览器没有这个 API —— iOS Safari 就属于这一类（网页拿不到 iPhone 的马达）';
+      elVibResult.textContent = `${label}：本浏览器没有这个 API —— iOS Safari 就属于这一类（网页拿不到 iPhone 的马达）`;
       setVerdictClass(elVibResult, 'bad');
       return;
     }
     let accepted;
     try {
-      accepted = navigator.vibrate(200);
+      accepted = navigator.vibrate(pattern);
     } catch (e) {
       accepted = false;
     }
     elVibResult.textContent = accepted
-      ? '调用已接受但手上没感觉 → 系统层面压掉了（静音/勿扰/系统里关了振动），或本机无马达'
-      : '调用被拒（false）→ 多为页面不可见或没有用户手势，可在页面可见时再点一次';
+      ? `${label}：调用已接受但手上没感觉 → 系统层面压掉了（静音/勿扰/系统里关了触感/省电模式），或马达做不出这一档`
+      : `${label}：调用被拒（false）→ 多为页面不可见或没有用户手势，可在页面可见时再点一次`;
     setVerdictClass(elVibResult, accepted ? 'warn' : 'bad');
   }
 
@@ -442,7 +451,10 @@
   elBtnStart.addEventListener('click', start);
   elBtnStorage.addEventListener('click', measureStorage);
   elBtnRtt.addEventListener('click', () => { measureRtt().then((r) => { rttResult = r; }); });
-  elBtnVib.addEventListener('click', testVibration);
+  for (const [id, label, pattern] of VIB_TESTS) {
+    const btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', () => testVibration(label, pattern));
+  }
   reportVibrationApi();       // 一进页面就报，不用点任何东西
 
   if (!F) {
