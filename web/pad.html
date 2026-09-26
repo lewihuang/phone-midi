@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>快捷键面板 — Phone MIDI CC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+
+  /* One screen, no scrolling: the pad must never shift under the finger. dvh so mobile
+     browser chrome collapsing does not resize the grid mid-press. */
+  body {
+    display: flex; flex-direction: column; gap: 10px;
+    height: 100dvh; padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    overscroll-behavior: none; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+
+  header { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+  #pageTitle { flex: 1 1 auto; font-size: clamp(18px, 5.4vw, 32px); font-weight: 700; letter-spacing: 0.01em;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .status { flex: 0 0 auto; font-size: 11px; padding: 4px 11px; border-radius: 99px; white-space: nowrap; }
+  .status.off { background: #334155; color: #94a3b8; }
+  .status.wait { background: #713f12; color: #fcd34d; }
+  .status.on { background: #065f46; color: #6ee7b7; }
+
+  /* 4×2, fixed: the PC editor mirrors exactly this, so the layout is never device-dependent. */
+  #grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
+          grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); }
+
+  .cell { position: relative; display: flex; align-items: center; justify-content: center;
+          padding: 8px; border-radius: 14px; overflow: hidden; background: #1e293b; color: #fff;
+          font-size: clamp(14px, 4.4vw, 28px); font-weight: 600; line-height: 1.2; text-align: center;
+          word-break: break-word; transition: transform 60ms ease, filter 60ms ease; }
+  .cell .note { position: absolute; right: 8px; bottom: 5px; font-size: 10px; font-weight: 500;
+                opacity: 0.5; font-family: ui-monospace, Consolas, monospace; }
+  .cell.pressed { transform: scale(0.96); filter: brightness(1.45); }
+  #grid.offline .cell { pointer-events: none; opacity: 0.45; }
+
+  #tabs { flex: 0 0 auto; display: flex; gap: 8px; }
+  #tabs.hidden { display: none; }
+  .tab { flex: 1 1 0; padding: 11px 4px; border: none; border-radius: 10px; font-family: inherit;
+         font-size: 13px; font-weight: 600; background: #1e293b; color: #94a3b8;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab.active { background: #334155; color: #e2e8f0; }
+
+  #err { flex: 0 0 auto; min-height: 15px; font-size: 12px; color: #fcd34d; }
+  .foot { flex: 0 0 auto; font-size: 12px; }
+  .foot a { color: #64748b; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="pageTitle">快捷键面板</h1>
+  <span class="status wait" id="conn">连接中…</span>
+</header>
+
+<main id="grid"></main>
+<nav id="tabs" class="hidden"></nav>
+
+<p id="err"></p>
+<p class="foot"><a href="/">← 返回推子</a></p>
+
+<script src="pad.js?v=23"></script>
+</body>
+</html>

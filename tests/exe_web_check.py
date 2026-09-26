@@ -4,6 +4,7 @@
 #
 # Skips (exit 0) when dist/ has no exe, so the suite still runs on a clean checkout.
 import os
+import re
 import sys
 
 from PyInstaller.archive.readers import CArchiveReader
@@ -61,9 +62,14 @@ def main():
               'no FLIP_STABILIZER / feedFlipMotion / tuning storage')
     if 'web/index.html' in toc:
         ih = ar.extract(toc['web/index.html']).decode('utf-8', 'ignore')
-        check('packaged index.html cache-buster matches the source',
-              'fusion.js?v=22' in ih,
-              'fusion.js?v=22')
+        # Derive the expected cache-buster from the source rather than hardcoding it: a literal
+        # here fails on every version bump while telling us nothing the byte comparison does not.
+        src = open(os.path.join(WEB, 'index.html'), encoding='utf-8').read()
+        pattern = r'(?:fusion|app|vibrato|latency|pad|calibrate-wizard)\.js\?v=\d+'
+        want, have = set(re.findall(pattern, src)), set(re.findall(pattern, ih))
+        check('packaged cache-busters match the source page',
+              bool(want) and want == have,
+              'source %s, packaged %s' % (sorted(want), sorted(have)))
 
     print('\n%d/%d checks passed' % (len([r for r in results if r]), len(results)))
     return 0 if all(results) else 1

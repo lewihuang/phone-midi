@@ -108,6 +108,17 @@ class WinMidi:
         dw = ((v & 0x7F) << 16) | (((v >> 7) & 0x7F) << 8) | (0xE0 | (channel & 0x0F))
         self._winmm.midiOutShortMsg(self._hmo, wintypes.DWORD(dw))
 
+    def send_note(self, note: int, channel: int, velocity: int):
+        """Note On (velocity > 0) / Note Off (velocity 0). Used by the Shortcut Pad only.
+
+        Notes, not CC: Mode A already sends CC1 on the same port, and a stray CC from the pad
+        would move the fader. See docs/adr/0004-midi-note-triggers.md.
+        """
+        if self._hmo is None: return
+        status = (0x90 if velocity > 0 else 0x80) | (channel & 0x0F)
+        dw = ((velocity & 0x7F) << 16) | ((note & 0x7F) << 8) | status
+        self._winmm.midiOutShortMsg(self._hmo, wintypes.DWORD(dw))
+
     def close(self):
         if self._hmo is not None: self._winmm.midiOutClose(self._hmo); self._hmo = None
 
@@ -243,6 +254,10 @@ class SensorHandler:
         self.pb_idle_sec = float(pb_idle_sec or 0)
         self._pb_last: dict[int, float] = {}       # channel → monotonic time of the last PB
         self._pb_value: dict[int, int] = {}        # channel → last PB value we sent
+        # Shortcut Pad: the layout lives here (single source of truth, pushed to every phone)
+        # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
+        self.pad_layout = load_pad_layout()
+        self._pad_held: dict[int, float] = {}      # trigger id → monotonic time of its Note On
 
     @property
     def client_count(self): return len(self._clients)
@@ -286,11 +301,78 @@ class SensorHandler:
                     self.last_cc_output = [{"cc": "PB", "channel": c, "value": 8192,
                                             "reason": "idle"} for c in done]
 
+    # ── 快捷键面板（Shortcut Pad） ─────────────────────────────────────────────
+
+    def pad_note_on(self, trigger_id: int):
+        note = pad_note_for(trigger_id)
+        try:
+            self.midi.send_note(note, PAD_CHANNEL, 127)
+        except Exception as e:
+            log.warning("快捷键触发失败（note %d）：%s", note, e)
+            return
+        self._pad_held[int(trigger_id)] = time.monotonic()
+        self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
+
+    def pad_note_off(self, trigger_id: int) -> bool:
+        """Send the matching Note Off. Returns whether a Note On was actually open."""
+        tid = int(trigger_id)
+        if tid not in self._pad_held: return False
+        del self._pad_held[tid]
+        try: self.midi.send_note(pad_note_for(tid), PAD_CHANNEL, 0)
+        except Exception as e: log.warning("快捷键松开失败（note %d）：%s", pad_note_for(tid), e)
+        return True
+
+    def pad_held_expired(self, now: float | None = None) -> list[int]:
+        t = time.monotonic() if now is None else now
+        return [tid for tid, at in self._pad_held.items() if t - at > PAD_HOLD_GUARD_SEC]
+
+    async def pad_watchdog(self):
+        """Release triggers whose 'up' never arrived (page closed, WiFi drop, tab killed).
+
+        Same failure class as the pitch-bend dead-man timer: the phone can vanish mid-press and
+        nothing else would ever close that Note.
+        """
+        while True:
+            await asyncio.sleep(0.1)
+            for tid in self.pad_held_expired():
+                if self.pad_note_off(tid):
+                    log.info("快捷键触发 %d 超过 %.0f ms 没收到松开，补发 Note Off",
+                             tid, PAD_HOLD_GUARD_SEC * 1000)
+
+    def release_all_triggers(self):
+        for tid in list(self._pad_held): self.pad_note_off(tid)
+
+    async def _on_trigger(self, obj: dict):
+        trigger_id = obj.get("id")
+        if not pad_trigger_valid(trigger_id):
+            log.warning("忽略越界的触发编号：%r（有效范围 0-%d）", trigger_id, pad_trigger_count() - 1)
+            return
+        trigger_id = int(trigger_id)
+        if str(obj.get("phase", "down")).lower() == "up":
+            self.pad_note_off(trigger_id)
+        else:
+            self.pad_note_on(trigger_id)
+
+    def set_pad_layout(self, layout) -> dict:
+        """Validate, persist and return the layout. Persisting does not need the server running."""
+        self.pad_layout = save_pad_layout(layout)
+        return self.pad_layout
+
+    async def broadcast_pad_layout(self):
+        """Push the layout to every connected phone; a phone that is away gets it on connect."""
+        payload = {"type": "pad_layout", "layout": self.pad_layout}
+        for client in list(self._clients):
+            try: await client.send_json(payload)
+            except Exception: pass
+
     async def handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(); await ws.prepare(request)
         self._clients.add(ws)
         log.info("Phone connected: %s (%d clients)", request.remote, len(self._clients))
         try: await ws.send_json({"type": "config", "config": self.engine.config})
+        except Exception: pass
+        # The pad page is useless without a layout, so it is pushed before anything else happens.
+        try: await ws.send_json({"type": "pad_layout", "layout": self.pad_layout})
         except Exception: pass
         try:
             async for msg in ws:
@@ -302,6 +384,7 @@ class SensorHandler:
             gone = self.centre_pb()
             if gone:
                 log.warning("手机断开，通道 %s 归中", ", ".join(str(c + 1) for c in gone))
+            self.release_all_triggers()
             log.info("Phone disconnected: %s (%d clients)", request.remote, len(self._clients))
         return ws
 
@@ -321,6 +404,10 @@ class SensorHandler:
         elif tp == "set_source":
             self.engine.update_source(obj.get("sensor", "rotation_vector"), obj.get("axis", "pitch"))
             await ws.send_json({"type": "config", "config": self.engine.config})
+        elif obj.get("kind") == "trigger":
+            # Shortcut Pad: a discrete trigger, not a value. It never touches the mapping engine
+            # (no range, no curve, no smoothing) — it becomes one MIDI Note (ADR 0004).
+            await self._on_trigger(obj)
         else:
             sensor = obj.get("sensor", "rotation_vector")
             axis = obj.get("axis", "pitch")
@@ -554,6 +641,92 @@ def save_window_prefs(prefs: dict):
     except Exception as e:
         log.warning("保存窗口尺寸失败：%s", e)
 
+# ── 快捷键面板（Shortcut Pad） ────────────────────────────────────────────────
+# 手机只发一个触发编号；Bridge 把它变成一条 MIDI Note（通道 16、音符 36 + 编号）。
+# "这个编号 = 哪个宏"由 DAW 侧的 MIDI Remote 决定——Bridge 不认识宏，也不做复合动作。
+# 布局由 Bridge 拥有并下发给手机（Layout Push），用户配置在 PC 端完成。
+# 设计与取舍：docs/spec/shortcut-pad.md、docs/adr/0004-midi-note-triggers.md
+PAD_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "pad.json"
+PAD_SLOTS = 8                 # 4 列 × 2 行，固定；PC 编辑器镜像同一套格子
+PAD_PAGES_MAX = 8
+PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36
+PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在通道分开，便于 DAW 侧过滤
+PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
+PAD_DEFAULT_TITLE = "快捷键面板"
+PAD_TEXT_MAX = 24
+# 固定调色板：全部是深色，白字可读。颜色无语义，纯粹为了一眼认出功能（spec D11）。
+PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
+              "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
+
+def pad_trigger_count() -> int:
+    return PAD_SLOTS * PAD_PAGES_MAX
+
+def pad_note_for(trigger_id: int) -> int:
+    return PAD_NOTE_BASE + int(trigger_id)
+
+def pad_trigger_valid(trigger_id) -> bool:
+    try: i = int(trigger_id)
+    except (TypeError, ValueError): return False
+    return 0 <= i < pad_trigger_count()
+
+def default_pad_layout() -> dict:
+    return {"version": 1, "pages": [{
+        "title": PAD_DEFAULT_TITLE,
+        "cells": [{"text": "宏 %d" % (i + 1), "color": PAD_COLORS[0]} for i in range(PAD_SLOTS)],
+    }]}
+
+def _pad_clean_cell(cell) -> dict:
+    out = {"text": "", "color": PAD_COLORS[0]}
+    if isinstance(cell, dict):
+        text = cell.get("text")
+        if isinstance(text, str): out["text"] = text[:PAD_TEXT_MAX]
+        color = cell.get("color")
+        if isinstance(color, str) and color in PAD_COLORS: out["color"] = color
+    return out
+
+def pad_clean_layout(layout) -> dict:
+    """Keep only the shape the phone renders; anything unexpected falls back to the default.
+
+    A hand-edited or corrupted pad.json must degrade to a working pad, never to a blank screen
+    the user cannot press (that is the same reasoning behind load_window_prefs).
+    """
+    pages = []
+    if isinstance(layout, dict) and isinstance(layout.get("pages"), list):
+        for page in layout["pages"][:PAD_PAGES_MAX]:
+            if not isinstance(page, dict): continue
+            title = page.get("title")
+            cells = page.get("cells")
+            pages.append({
+                "title": title[:PAD_TEXT_MAX] if isinstance(title, str) and title else PAD_DEFAULT_TITLE,
+                "cells": [_pad_clean_cell(c) for c in (cells if isinstance(cells, list) else [])][:PAD_SLOTS],
+            })
+    if not pages: return default_pad_layout()
+    # Pad every page out to a full 4×2 grid so the phone always renders the same shape.
+    for page in pages:
+        while len(page["cells"]) < PAD_SLOTS: page["cells"].append(_pad_clean_cell(None))
+    return {"version": 1, "pages": pages}
+
+def load_pad_layout() -> dict:
+    try:
+        with open(PAD_PREFS, "r", encoding="utf-8") as f:
+            return pad_clean_layout(json.load(f))
+    except FileNotFoundError:
+        return default_pad_layout()
+    except Exception as e:
+        log.warning("读取快捷键面板布局失败，改用默认布局：%s", e)
+        return default_pad_layout()
+
+def save_pad_layout(layout) -> dict:
+    """Best effort, like window prefs: a pad that cannot save must still work this session."""
+    clean = pad_clean_layout(layout)
+    try:
+        PAD_PREFS.parent.mkdir(parents=True, exist_ok=True)
+        with open(PAD_PREFS, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("保存快捷键面板布局失败：%s", e)
+    return clean
+
 def _port_in_use(host: str, port: int) -> bool:
     """Is something already listening there? (Cheap TCP connect on the phone's own port.)"""
     probe_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
@@ -652,6 +825,17 @@ class BridgeApp:
         # 精简模式（置顶，只看当前值与进度条）。尺寸只在本次运行内记住，不落盘。
         self._compact = False
         self._compact_geom = None
+        # 快捷键面板：PC 端镜像 + 编辑器。布局由这里拥有（编辑不必先启动服务器）。
+        self._pad_layout = load_pad_layout()
+        self._pad_win = None
+        self._pad_body = None
+        self._pad_page = 0
+        self._pad_sel = None
+        self._pad_cells = []
+        self._pad_tab_btns = []
+        self._pad_swatches = []
+        self._pad_save_timer = None
+        self._pad_confirm_delete = False
         self._build_setup()
 
     # ── Setup View ────────────────────────────────────────────────────────
@@ -826,6 +1010,12 @@ class BridgeApp:
                   font=FONT, bg=SURFACE, fg=FG, activebackground=BORDER,
                   relief=tk.FLAT, padx=14, pady=4, cursor="hand2").pack(pady=(4, 0))
 
+        # 快捷键面板：PC 端镜像手机上的按钮阵列并可编辑（改完即时同步）
+        self._pad_btn = tk.Button(self.root, text="快捷键面板…", command=self._open_pad_editor,
+                                  font=FONT, bg=SURFACE, fg=FG, activebackground=BORDER,
+                                  relief=tk.FLAT, padx=14, pady=4, cursor="hand2")
+        self._pad_btn.pack(pady=(6, 0))
+
         # Stop button
         self._stop_btn = tk.Button(self.root, text="STOP", command=self._on_stop,
                                    font=FONT_BOLD, bg=RED, fg=BG, activebackground="#D32F2F",
@@ -987,6 +1177,260 @@ class BridgeApp:
             self._bar.coords(self._bar_fill, 0, 0, norm * w, h)
             self._bar.itemconfigure(self._bar_mid, state="hidden")
 
+    # ── 快捷键面板编辑器（Layout Push 的写入端） ────────────────────────────
+    #
+    # 与精简监视窗同一思路：把手机上的东西在 PC 上镜像出来，只是这里可编辑——点格子改文字/
+    # 颜色，改完立刻落盘并广播给已连接的手机。用独立 Toplevel，因此主窗的几何契约（标准窗
+    # 固定 480×420 且不记忆位置、精简窗记忆尺寸与位置）一点都没被碰到。
+    # 设计：docs/spec/shortcut-pad.md（D7/D8）；协议：Bridge → 手机 `{"type": "pad_layout"}`。
+
+    def _open_pad_editor(self):
+        if self._pad_win is not None:
+            try:
+                self._pad_win.deiconify(); self._pad_win.lift(); self._pad_win.focus_set()
+                return
+            except tk.TclError:
+                self._pad_win = None
+        win = tk.Toplevel(self.root)
+        self._pad_win = win
+        win.title("快捷键面板 · 编辑")
+        win.configure(bg=BG)
+        win.geometry("600x600")
+        win.minsize(520, 520)
+        win.protocol("WM_DELETE_WINDOW", self._close_pad_editor)
+        self._pad_body = tk.Frame(win, bg=BG)
+        self._pad_body.pack(fill=tk.BOTH, expand=True)
+        self._pad_render()
+
+    def _close_pad_editor(self):
+        if self._pad_save_timer:
+            self.root.after_cancel(self._pad_save_timer); self._pad_save_timer = None
+        if self._pad_win is not None:
+            try: self._pad_win.destroy()
+            except tk.TclError: pass
+        self._pad_win = None
+        self._pad_cells = []
+        self._pad_tab_btns = []
+        self._pad_swatches = []
+
+    def _pad_pages(self):
+        pages = self._pad_layout.get("pages")
+        if not isinstance(pages, list) or not pages:
+            pages = default_pad_layout()["pages"]
+            self._pad_layout = {"version": 1, "pages": pages}
+        if not 0 <= self._pad_page < len(pages): self._pad_page = 0
+        return pages
+
+    def _pad_page_data(self):
+        return self._pad_pages()[self._pad_page]
+
+    def _pad_cell(self, slot):
+        cells = self._pad_page_data().get("cells")
+        if not isinstance(cells, list): return None
+        return cells[slot] if slot < len(cells) else None
+
+    def _pad_render(self):
+        """Full rebuild: page tabs, page title, the 4×2 grid and the cell editor."""
+        if self._pad_win is None: return
+        for w in self._pad_body.winfo_children(): w.destroy()
+        self._pad_cells, self._pad_tab_btns, self._pad_swatches = [], [], []
+        pages = self._pad_pages()
+
+        tk.Label(self._pad_body, text="快捷键面板", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(14, 2))
+        tk.Label(self._pad_body,
+                 text="改完即时同步到手机。格子上 N36… 就是要在 Nuendo 的映射助手里学习的那条 Note",
+                 font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 8))
+
+        # 页签：与手机底部的页签一一对应
+        tabs = tk.Frame(self._pad_body, bg=BG)
+        tabs.pack(fill=tk.X, padx=16)
+        for i in range(len(pages)):
+            b = tk.Button(tabs, font=FONT_HINT, relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                          command=lambda idx=i: self._pad_goto(idx))
+            b.pack(side=tk.LEFT, padx=(0, 4))
+            self._pad_tab_btns.append(b)
+        tk.Button(tabs, text="＋ 加页", font=FONT_HINT, relief=tk.FLAT, padx=8, pady=3,
+                  cursor="hand2", bg=SURFACE, fg=FG_DIM,
+                  command=self._pad_add_page).pack(side=tk.LEFT, padx=(10, 4))
+        if len(pages) > 1:
+            tk.Button(tabs, text="删除本页", font=FONT_HINT, relief=tk.FLAT, padx=8, pady=3,
+                      cursor="hand2", bg=SURFACE, fg=FG_DIM,
+                      command=self._pad_del_page).pack(side=tk.LEFT)
+
+        # 页标题：手机上那一行大标题
+        row = tk.Frame(self._pad_body, bg=BG)
+        row.pack(fill=tk.X, padx=16, pady=(10, 0))
+        tk.Label(row, text="页标题", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
+        self._pad_title_var = tk.StringVar(value=self._pad_page_data().get("title") or "")
+        title_entry = tk.Entry(row, textvariable=self._pad_title_var, font=FONT, bg=SURFACE, fg=FG,
+                               insertbackground=FG, relief=tk.FLAT)
+        title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
+        title_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_title())
+
+        # 4×2 网格：与手机严格同构（4 列 2 行，行优先就是编号顺序）
+        grid = tk.Frame(self._pad_body, bg=BG)
+        grid.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
+        for r in range(2): grid.rowconfigure(r, weight=1)
+        for c in range(4): grid.columnconfigure(c, weight=1)
+        for slot in range(PAD_SLOTS):
+            frame = tk.Frame(grid, bg=PAD_COLORS[0], highlightthickness=2,
+                             highlightbackground=BG, cursor="hand2")
+            frame.grid(row=slot // 4, column=slot % 4, sticky="nsew", padx=3, pady=3)
+            label = tk.Label(frame, text="", font=FONT_BOLD, bg=PAD_COLORS[0], fg="#FFFFFF",
+                             wraplength=110, justify="center")
+            label.pack(fill=tk.BOTH, expand=True, padx=6, pady=(8, 0))
+            note = tk.Label(frame, text="", font=("Consolas", 8), bg=PAD_COLORS[0], fg="#C8CDD6")
+            note.pack(side=tk.BOTTOM, anchor="e", padx=6, pady=(0, 4))
+            for w in (frame, label, note):
+                w.bind("<Button-1>", lambda _e, s=slot: self._pad_select(s))
+            self._pad_cells.append({"frame": frame, "label": label, "note": note})
+
+        # 选中格子：文字 + 固定调色板（不用系统取色器：模态弹窗，而且容易选到看不清的颜色）
+        edit = tk.Frame(self._pad_body, bg=BG)
+        edit.pack(fill=tk.X, padx=16)
+        tk.Label(edit, text="按钮文字", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
+        self._pad_text_var = tk.StringVar()
+        self._pad_entry = tk.Entry(edit, textvariable=self._pad_text_var, font=FONT, bg=SURFACE,
+                                   fg=FG, insertbackground=FG, relief=tk.FLAT, state=tk.DISABLED)
+        self._pad_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
+        self._pad_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_text())
+
+        pal = tk.Frame(self._pad_body, bg=BG)
+        pal.pack(fill=tk.X, padx=16, pady=(10, 4))
+        tk.Label(pal, text="颜色", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(0, 8))
+        for color in PAD_COLORS:
+            sw = tk.Frame(pal, bg=color, width=34, height=22, highlightthickness=2,
+                          highlightbackground=BG, cursor="hand2")
+            sw.pack(side=tk.LEFT, padx=2); sw.pack_propagate(False)
+            sw.bind("<Button-1>", lambda _e, c=color: self._pad_set_color(c))
+            self._pad_swatches.append(sw)
+
+        self._pad_status_lbl = tk.Label(self._pad_body, text="", font=FONT_HINT, bg=BG, fg=AMBER)
+        self._pad_status_lbl.pack(pady=(0, 10))
+
+        self._pad_redraw()
+
+    def _pad_redraw(self):
+        """In-place refresh: safe while typing, because it never recreates widgets."""
+        if self._pad_win is None: return
+        page = self._pad_page_data()
+        cells = page.get("cells") if isinstance(page.get("cells"), list) else []
+        for i, b in enumerate(self._pad_tab_btns):
+            title = (self._pad_pages()[i].get("title") or ("页 %d" % (i + 1)))[:12]
+            b.configure(text=title, bg=(BORDER if i == self._pad_page else SURFACE),
+                        fg=(FG if i == self._pad_page else FG_DIM), activebackground=BORDER)
+        for slot, widgets in enumerate(self._pad_cells):
+            cfg = cells[slot] if slot < len(cells) and isinstance(cells[slot], dict) else {}
+            color = cfg.get("color") if cfg.get("color") in PAD_COLORS else PAD_COLORS[0]
+            selected = (slot == self._pad_sel)
+            widgets["frame"].configure(bg=color, highlightbackground=("#60A5FA" if selected else BG))
+            widgets["label"].configure(text=cfg.get("text") or "", bg=color)
+            widgets["note"].configure(bg=color,
+                                      text="N%d" % pad_note_for(self._pad_page * PAD_SLOTS + slot))
+        if self._pad_sel is None:
+            self._pad_entry.configure(state=tk.NORMAL)
+            self._pad_text_var.set("")
+            self._pad_entry.configure(state=tk.DISABLED)
+        else:
+            cfg = self._pad_cell(self._pad_sel) or {}
+            self._pad_entry.configure(state=tk.NORMAL)
+            self._pad_text_var.set(cfg.get("text") or "")
+
+    # ── 编辑动作 ──
+
+    def _pad_goto(self, index):
+        self._pad_page = index
+        self._pad_sel = None
+        self._pad_confirm_delete = False
+        self._pad_render()
+
+    def _pad_select(self, slot):
+        self._pad_sel = slot
+        self._pad_entry.configure(state=tk.NORMAL)
+        self._pad_redraw()
+        self._pad_entry.focus_set()
+
+    def _pad_edit_text(self):
+        if self._pad_sel is None: return
+        cell = self._pad_cell(self._pad_sel)
+        if cell is None: return
+        text = self._pad_text_var.get()[:PAD_TEXT_MAX]
+        if text == (cell.get("text") or ""): return
+        cell["text"] = text
+        self._pad_cells[self._pad_sel]["label"].configure(text=text)
+        self._pad_commit_soon()
+
+    def _pad_edit_title(self):
+        page = self._pad_page_data()
+        title = self._pad_title_var.get()[:PAD_TEXT_MAX]
+        if title == (page.get("title") or ""): return
+        page["title"] = title
+        self._pad_redraw()
+        self._pad_commit_soon()
+
+    def _pad_set_color(self, color):
+        if self._pad_sel is None:
+            self._pad_status("先点一个格子，再选颜色")
+            return
+        cell = self._pad_cell(self._pad_sel)
+        if cell is None: return
+        cell["color"] = color
+        self._pad_redraw()
+        self._pad_commit()
+
+    def _pad_add_page(self):
+        pages = self._pad_pages()
+        if len(pages) >= PAD_PAGES_MAX:
+            self._pad_status("最多 %d 页" % PAD_PAGES_MAX); return
+        pages.append({"title": "新页 %d" % (len(pages) + 1),
+                      "cells": [{"text": "", "color": PAD_COLORS[0]} for _ in range(PAD_SLOTS)]})
+        self._pad_page = len(pages) - 1
+        self._pad_sel = None
+        self._pad_commit()
+        self._pad_render()
+        self._pad_status("已加一页；手机上会立刻多出一个页签")
+
+    def _pad_del_page(self):
+        pages = self._pad_pages()
+        if len(pages) <= 1:
+            self._pad_status("至少保留一页"); return
+        # 两次点击确认，而不是模态弹窗：不引额外 import，也不会弹出被 DAW 挡住的对话框
+        if not self._pad_confirm_delete:
+            self._pad_confirm_delete = True
+            self._pad_status("再点一次「删除本页」确认删除这一页"); return
+        self._pad_confirm_delete = False
+        del pages[self._pad_page]
+        self._pad_page = max(0, self._pad_page - 1)
+        self._pad_sel = None
+        self._pad_commit()
+        self._pad_render()
+
+    def _pad_status(self, msg):
+        if self._pad_win is None: return
+        try: self._pad_status_lbl.configure(text=msg)
+        except (tk.TclError, AttributeError): pass
+
+    # ── 落盘与广播 ──
+
+    def _pad_commit_soon(self):
+        """Debounce typing: one save+broadcast per pause, not per character."""
+        if self._pad_save_timer:
+            self.root.after_cancel(self._pad_save_timer)
+        self._pad_save_timer = self.root.after(300, self._pad_commit)
+
+    def _pad_commit(self):
+        self._pad_save_timer = None
+        handler = self._handler
+        if handler is not None:
+            # The running server owns the layout the phones get; it persists and hands it back.
+            self._pad_layout = handler.set_pad_layout(self._pad_layout)
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                try: asyncio.run_coroutine_threadsafe(handler.broadcast_pad_layout(), loop)
+                except RuntimeError: pass
+        else:
+            self._pad_layout = save_pad_layout(self._pad_layout)
+
     def _poll_status(self):
         if self._mode != "running": return
         if self._handler:
@@ -1025,7 +1469,7 @@ class BridgeApp:
         for w in self.root.winfo_children(): w.destroy()
         for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
                      "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
-                     "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var"):
+                     "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn"):
             if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
 
@@ -1124,6 +1568,9 @@ class BridgeApp:
         loop.run_until_complete(web.SockSite(runner, sock, ssl_context=ssl_context).start())
         if handler.pb_idle_sec > 0:
             asyncio.ensure_future(handler.pb_watchdog(), loop=loop)
+        # A trigger whose "release" never arrives would hang a Note On in the DAW, so the pad
+        # gets its own guard regardless of the pitch-bend setting.
+        asyncio.ensure_future(handler.pad_watchdog(), loop=loop)
         self._loop = loop; self._runner = runner
         try:
             loop.run_forever()
@@ -1281,6 +1728,9 @@ def _cli_mode(args):
             # loop and the server would never start serving (found by tests/bridge_boot_check).
             asyncio.ensure_future(handler.pb_watchdog())
         app.on_startup.append(_start_watchdog)
+        # The pad's guard is independent of the PB setting: a lost trigger release would leave
+        # a Note On hanging in the DAW whatever `--pb-idle-ms` says.
+        asyncio.ensure_future(handler.pad_watchdog())
     else:
         log.info("PB 守护已关闭（--pb-idle-ms 0）：手机静默时 DAW 会停在最后的弯音值")
     try:

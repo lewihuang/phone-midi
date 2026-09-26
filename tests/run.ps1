@@ -22,6 +22,10 @@ Write-Host "`n=== bridge_ui_check.py (compact monitor window) ===" -ForegroundCo
 python "$here/bridge_ui_check.py"
 if ($LASTEXITCODE -ne 0) { $fail++ }
 
+Write-Host "`n=== bridge_pad_check.py (shortcut pad) ===" -ForegroundColor Cyan
+python "$here/bridge_pad_check.py"
+if ($LASTEXITCODE -ne 0) { $fail++ }
+
 Write-Host "`n=== pages_smoke.mjs (page wiring) ===" -ForegroundColor Cyan
 node "$here/pages_smoke.mjs"
 if ($LASTEXITCODE -ne 0) { $fail++ }

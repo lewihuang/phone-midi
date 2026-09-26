@@ -8,6 +8,7 @@ const pages = {
   index: { html: 'index.html', scripts: ['fusion.js', 'vibrato.js', 'app.js'] },
   lab: { html: 'vibrato-lab.html', scripts: ['vibrato.js', 'vibrato-lab.js'] },
   latency: { html: 'latency.html', scripts: ['fusion.js', 'latency.js'] },
+  pad: { html: 'pad.html', scripts: ['pad.js'] },
   calFlip: { html: 'calibrate-flip.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calLift: { html: 'calibrate-lift.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calShake: { html: 'calibrate-shake.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
@@ -22,21 +23,35 @@ function makeDom(page) {
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
   const profile = (html.match(/data-profile="([^"]+)"/) || [])[1] || 'lift';
   const nodes = {};
-  const mk = (id, tag) => ({
-    id, tagName: tag || 'DIV', style: {}, dataset: {}, children: [],
-    classList: {
-      _s: new Set(),
-      add(c) { this._s.add(c); },
-      remove(c) { this._s.delete(c); },
-      contains(c) { return this._s.has(c); },
-      toggle(c, on) { if (on === undefined ? !this._s.has(c) : on) this._s.add(c); else this._s.delete(c); },
-    },
-    textContent: '', innerHTML: '', value: '1', disabled: false, href: '',
-    addEventListener() {}, removeEventListener() {}, appendChild(c) { this.children.push(c); },
-    querySelector(sel) { return mk('sub', 'INPUT'); },
-    querySelectorAll() { return []; },
-    setAttribute() {}, getAttribute() { return null; }, requestAnimationFrame() {},
-  });
+  const mk = (id, tag) => {
+    const node = {
+      id, tagName: tag || 'DIV', style: {}, dataset: {}, children: [],
+      classList: {
+        _s: new Set(),
+        add(c) { this._s.add(c); },
+        remove(c) { this._s.delete(c); },
+        contains(c) { return this._s.has(c); },
+        toggle(c, on) { if (on === undefined ? !this._s.has(c) : on) this._s.add(c); else this._s.delete(c); },
+      },
+      innerHTML: '', value: '1', disabled: false, href: '',
+      _listeners: {},
+      addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); },
+      removeEventListener() {}, appendChild(c) { this.children.push(c); },
+      dispatch(type, event) { for (const fn of (this._listeners[type] || [])) fn(event || {}); },
+      querySelector(sel) { return mk('sub', 'INPUT'); },
+      querySelectorAll() { return []; },
+      setAttribute() {}, getAttribute() { return null; }, requestAnimationFrame() {},
+      setPointerCapture() {}, releasePointerCapture() {}, focus() {},
+    };
+    let text = '';
+    // A real DOM clears child nodes when textContent is assigned, and pad.js relies on that
+    // when it rebuilds the page tabs.
+    Object.defineProperty(node, 'textContent', {
+      get() { return text; },
+      set(v) { text = String(v); if (v === '') node.children.length = 0; },
+    });
+    return node;
+  };
   const document = {
     hidden: false,
     body: { dataset: { profile } },
@@ -48,16 +63,17 @@ function makeDom(page) {
     querySelectorAll: () => [],
     addEventListener() {}, removeEventListener() {},
   };
-  return { document, ids };
+  return { document, ids, nodes };
 }
 
 function loadPage(page) {
-  const { document, ids } = makeDom(page);
+  const { document, ids, nodes } = makeDom(page);
   const listeners = {};
+  const sockets = [];
   const win = {
     document, location: { protocol: 'http:', host: '127.0.0.1:8765', search: '', href: 'http://x/' },
     history: { replaceState() {} },
-    navigator: {},
+    navigator: { wakeLock: { request: async () => ({ addEventListener() {}, release() {} }) } },
     performance: { now: () => Date.now() },
     localStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
     sessionStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
@@ -66,7 +82,13 @@ function loadPage(page) {
     },
     requestAnimationFrame(f) { return setTimeout(f, 0); },
     setTimeout, clearTimeout, setInterval, clearInterval,
-    WebSocket: function () { this.readyState = 0; this.send = () => {}; this.close = () => {}; },
+    // Capture every socket so a page can be driven the way the browser would drive it.
+    WebSocket: function (url) {
+      this.url = url; this.readyState = 0; this.sent = [];
+      this.send = (s) => this.sent.push(JSON.parse(s));
+      this.close = () => {};
+      sockets.push(this);
+    },
     PhoneMidiFusion: null,
     URLSearchParams,
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
@@ -82,7 +104,7 @@ function loadPage(page) {
   for (const f of files[page]) {
     vm.runInContext(fs.readFileSync(web(f), 'utf8'), ctx, { filename: f });
   }
-  return { win, ctx, ids, listeners };
+  return { win, ctx, ids, listeners, nodes, sockets };
 }
 
 const results = [];
@@ -145,6 +167,87 @@ function check(name, ok, detail) {
   check('latency page: measures the new chain instead',
     /id="driftMeasured"/.test(latHtml) && !!lat.win.document.getElementById('driftMeasured'),
     'accelerometer-vs-attitude drift readout present');
+}
+
+// ── the shortcut pad page (spec/shortcut-pad.md, ADR 0004) ───────────────────
+{
+  const { win, sockets } = loadPage('pad');
+  const grid = win.document.getElementById('grid');
+  const tabs = win.document.getElementById('tabs');
+  const cellText = (i) => grid.children[i].children[0].textContent;
+  const cellNote = (i) => grid.children[i].children[1].textContent;
+  const press = (i, pointerId) => grid.children[i].dispatch('pointerdown', { pointerId, preventDefault() {} });
+  const release = (i, pointerId) => grid.children[i].dispatch('pointerup', { pointerId });
+
+  check('pad: renders 4×2 = 8 cells', grid.children.length === 8, `${grid.children.length} cells`);
+  check('pad: cells carry their trigger numbers N36…N43',
+    grid.children.map((_c, i) => cellNote(i)).join(' ') === Array.from({ length: 8 }, (_v, i) => `N${36 + i}`).join(' '),
+    `N36 N37 N38 N39 …`);
+  check('pad: no tab bar until a layout with pages arrives',
+    tabs.classList.contains('hidden') && tabs.children.length === 0,
+    `${tabs.children.length} tab(s) before the first pad_layout`);
+
+  const ws = sockets[0];
+  check('pad: opens a WebSocket on /ws', !!ws && /\/ws$/.test(ws.url || ''), ws ? ws.url : 'no socket');
+  check('pad: starts offline and says so',
+    grid.classList.contains('offline') && win.document.getElementById('conn').textContent === '连接中…',
+    win.document.getElementById('conn').textContent);
+
+  press(0, 1);   // offline press
+  check('pad: an offline press sends nothing', ws.sent.length === 0, `${ws.sent.length} message(s)`);
+
+  ws.readyState = 1; ws.onopen();
+  check('pad: connected clears the offline state',
+    !grid.classList.contains('offline') && win.document.getElementById('conn').textContent === '已连接',
+    win.document.getElementById('conn').textContent);
+
+  ws.onmessage({ data: JSON.stringify({ type: 'pad_layout', layout: { pages: [
+    { title: '轨道颜色', cells: [{ text: '变红', color: '#b91c1c' }, { text: '变蓝', color: '#1d4ed8' }] },
+    { title: '走带', cells: [{ text: '播放' }] },
+  ] } }) });
+  check('pad: layout drives the title, cell text/colour and the tabs',
+    win.document.getElementById('pageTitle').textContent === '轨道颜色'
+    && cellText(0) === '变红' && grid.children[0].style.background === '#b91c1c'
+    && tabs.children.length === 2 && !tabs.classList.contains('hidden')
+    && tabs.children[0].textContent === '轨道颜色',
+    `title='${win.document.getElementById('pageTitle').textContent}', tabs=${tabs.children.length}`);
+
+  press(0, 2);
+  check('pad: a press sends exactly one trigger for that cell',
+    ws.sent.length === 1 && ws.sent[0].kind === 'trigger' && ws.sent[0].id === 0 && ws.sent[0].phase === 'down',
+    JSON.stringify(ws.sent[0]));
+  release(0, 2);
+  check('pad: release sends the matching up for the same id',
+    ws.sent.length === 2 && ws.sent[1].id === 0 && ws.sent[1].phase === 'up',
+    JSON.stringify(ws.sent[1]));
+
+  press(1, 3);
+  check('pad: a second cell uses its own id', ws.sent[2].id === 1, JSON.stringify(ws.sent[2]));
+  release(1, 3);
+
+  tabs.children[1].dispatch('click', {});
+  check('pad: switching pages renumbers and retitles',
+    cellText(0) === '播放' && cellNote(0) === 'N44'
+    && win.document.getElementById('pageTitle').textContent === '走带',
+    `${cellText(0)} / ${cellNote(0)}`);
+  press(0, 4);
+  check('pad: page 2 continues the numbering at id 8', ws.sent.at(-1).id === 8, JSON.stringify(ws.sent.at(-1)));
+  release(0, 4);
+
+  const before = ws.sent.length;
+  ws.onmessage({ data: JSON.stringify({ type: 'pad_state', states: [{ id: 0, active: true }] }) });
+  ws.onmessage({ data: 'not json at all' });
+  ws.onmessage({ data: JSON.stringify({ type: 'config', config: {} }) });
+  check('pad: unknown/foreign message types are ignored, never fatal',
+    ws.sent.length === before && grid.children.length === 8 && cellNote(0) === 'N44',
+    'forward compatible: state read-back can arrive later without breaking the pad');
+
+  press(0, 5);
+  const n = ws.sent.length;
+  ws.onclose();
+  check('pad: a disconnect releases held buttons and goes offline',
+    ws.sent.length === n + 1 && ws.sent.at(-1).phase === 'up' && grid.classList.contains('offline'),
+    `${ws.sent.at(-1).phase} then offline`);
 }
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);
