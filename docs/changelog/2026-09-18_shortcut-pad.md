@@ -103,6 +103,33 @@ Bridge 展开态新增「快捷键面板…」按钮 → 独立 Toplevel：页�
 
 ---
 
+## 真机验证：通过 ✅
+
+用户真机确认：**手机上按一格 → Nuendo 执行宏，且音源不再被误触发**。
+
+### 走通的那条路（照这个顺序做，任何一步颠倒都会失败）
+
+1. **loopMIDI 建面板专用端口**（如 `PhonePad`），与推子端口分开。
+2. **重启 Windows MIDI 服务**（管理员）：`Restart-Service midisrv`。
+   - 这是本轮最难查的一环：`Windows MIDI 服务` 只在**启动时**把老式（WinMM/loopMIDI）端口包装成新式 MIDI 设备
+     （注册表/端口文件里表现为 `MIDIU_KSA_…` 设备实例）。loopMIDI 的虚拟端口**不产生 PnP 到达事件**，
+     所以服务不重启，新建端口永远不会出现在 `Windows MIDI` / WinRT 那套枚举里 —— 而 MIDI Remote 用的正是那套。
+   - 判据（客观、不用猜）：`%APPDATA%\Steinberg\Nuendo 15_64\Port Setup.xml` 里，新端口是否多出
+     `I|Windows MIDI|<端口名>` 一条。只有 `DirectMusic` 一条 = 还没被包装。
+   - **重启 Nuendo 没用**（枚举的是服务已经准备好的列表）。
+3. **重启 Nuendo**，在 MIDI Remote 管理器里把设备的输入端口选成新端口。
+4. **Bridge**：推子端口照旧、**面板端口**选新端口 → START（运行页显示绿色的 `面板端口: …（与推子分离）`）。
+5. 手机 `/pad.html` 按格子 → 宏执行 ✓。
+
+### 踩过的坑（都已写进指南）
+
+| 坑 | 表现 | 结论 |
+|---|---|---|
+| 端口同时是 `All MIDI Inputs` 成员 | 音源轨跟着弹音（OMNI，通道 16 也拦不住） | 必须分端口；**取消 All MIDI Inputs 会弄坏推子**（其 CC1 靠这条名单） |
+| 新建端口只被 DirectMusic 枚举 | 往新端口发消息，DAW 完全无反应 | 重启 `midisrv`（见上） |
+| `enableemulated` 开关 | **每个端口都多出一份【模拟】副本** | 只挪 `ignoreportfilter`；`enableemulated` 不要碰（这是助手在本轮踩的坑） |
+| 先绑"运输状态值" | `Transport.Stop` 用 TriggerPad 绑不生效 | 绑**命令 / 宏**更可靠（真机验证过宏这条路） |
+
 ## 未做（与 spec 的非目标一致）
 
 - **状态回读**（DAW 把"这个宏现在开没开"发回手机）：已确认将来需要（会有开关型宏），但 v1 不做。

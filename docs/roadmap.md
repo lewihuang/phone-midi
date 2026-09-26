@@ -43,7 +43,9 @@
 
 | 功能 | 工作量 | 说明 |
 |------|--------|------|
-| **快捷键面板** | 中 | ✅ 已实现（2026-09-18）：手机/平板当宏命令按钮阵列（4×2 = 8 格/页，可多页），PC 端镜像编辑并即时同步；按下发 Note 36+编号 → Nuendo MIDI Remote 映射到宏 → [spec](spec/shortcut-pad.md) · [ADR 0004](adr/0004-midi-note-triggers.md) · [设置指南](guide/nuendo-shortcut-pad.md) |
+| **快捷键面板** | 中 | ✅ 已实现并在真机验证通过（2026-09-18）：手机/平板当宏命令按钮阵列（4×2 = 8 格/页，可多页），PC 端镜像编辑并即时同步；按下发 Note 36+编号 → Nuendo MIDI Remote 映射到宏 → [spec](spec/shortcut-pad.md) · [ADR 0004](adr/0004-midi-note-triggers.md) · [设置指南](guide/nuendo-shortcut-pad.md) |
+| **快捷键面板 v1.1** | 中 | TODO（2026-09-18 真机后提出）：**T1** 布局改 2 列 × 4 行（现在 4×2 铺满整屏、浪费空间）；**T2** 音符编号可在 PC 端编辑（现在固定 `36 + id`）。两者都动"布局 + 配置模型"，建议一起做 → [spec §9](spec/shortcut-pad.md) |
+| **GUI 现代化** | 大 | TODO：手机端与 PC 端整体美术风格偏旧（T3）。手机端是 CSS 较便宜；**PC 端是 Tkinter，需先做取舍**（ttk 主题 + 自绘 vs 换浏览器/WebView），且不得破坏标准窗 480×420 不记忆 / 精简窗记忆几何的契约 → 建议先走一次需求拷问 |
 | **XY Pad 触屏** | 中 | 屏幕二维控制面 |
 | **预设保存/加载** | 中 | 多套校准 / 映射预设 |
 | **Web 配置完整 UI** | 大 | 可视化编辑 mapping |
