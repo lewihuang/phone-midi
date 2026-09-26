@@ -4,58 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>延迟诊断 — Phone MIDI CC</title>
+<link rel="stylesheet" href="ios.css?v=1">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { min-height: 100%; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
-  body { padding: 16px 14px 48px; max-width: 460px; margin: 0 auto; }
-
-  .nav { font-size: 12px; color: #64748b; margin-bottom: 14px; line-height: 1.7; }
-  .nav a { color: #93c5fd; text-decoration: none; }
-
-  h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
-  .sub { font-size: 12.5px; color: #94a3b8; line-height: 1.65; margin-bottom: 16px; }
-  .sub b { color: #e2e8f0; }
-
-  .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
-  .btn-primary { background: #7c3aed; color: #fff; }
-  .btn-primary:active { background: #6d28d9; }
-  .btn-primary:disabled { background: #334155; color: #64748b; }
-  .btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 8px; background: #334155; color: #cbd5e1; width: auto; }
-  .btn-sm:active { background: #475569; }
-  .row-btn { display: flex; gap: 8px; margin-top: 10px; }
-
-  .err { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 18px; }
-
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 14px 14px 12px; margin-top: 14px; }
-  .card h2 { font-size: 13.5px; font-weight: 700; color: #e2e8f0; margin-bottom: 4px; }
-  .card .hint { font-size: 11.5px; color: #64748b; line-height: 1.55; margin-bottom: 10px; }
-
-  table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.kv td { padding: 3px 0; vertical-align: baseline; }
-  table.kv td.k { color: #94a3b8; width: 52%; }
-  table.kv td.v { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-variant-numeric: tabular-nums; text-align: right; color: #e2e8f0; }
-  .v.good { color: #6ee7b7; }
-  .v.warn { color: #fcd34d; }
-  .v.bad  { color: #f87171; }
-  .v.dim  { color: #64748b; }
-
-  .slider-row { margin-top: 10px; }
-  .slider-row label { display: flex; justify-content: space-between; font-size: 12.5px; color: #94a3b8; margin-bottom: 4px; }
-  .slider-row label span.val { font-family: 'SF Mono', monospace; color: #e2e8f0; }
-  input[type=range] { width: 100%; accent-color: #8b5cf6; }
-
-  .bars { margin-top: 6px; }
-  .bar-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11.5px; color: #94a3b8; }
-  .bar-line .name { width: 46px; flex-shrink: 0; }
-  .bar-track { flex: 1; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
-  .bar-fill { height: 100%; width: 0%; border-radius: 6px; }
-  .bar-fill.filt { background: linear-gradient(90deg, #7c3aed, #c084fc); }
-  .bar-fill.raw { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
-  .bar-line .num { width: 60px; text-align: right; font-family: 'SF Mono', monospace; color: #e2e8f0; }
-
-  .verdict { font-size: 12.5px; line-height: 1.7; color: #cbd5e1; background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
-  .verdict b { color: #6ee7b7; }
-  .foot { font-size: 11px; color: #475569; text-align: center; margin-top: 18px; line-height: 1.6; }
+  /* 页面专属：单栏，卡片自上而下堆叠 */
+  body { max-width: 460px; margin: 0 auto; }
+  .card { padding: 18px 16px; }
+  .card h2 { font-size: 17px; }
+  .hint { font-size: 13px; line-height: 1.6; margin: 0 0 10px; }
+  .kv td { padding: 8px 0; font-size: 14px; }
+  .btn { width: 100%; }
+  .bars { margin-top: 12px; }
 </style>
 </head>
 <body>

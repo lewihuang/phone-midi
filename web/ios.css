@@ -1,0 +1,332 @@
+/* Phone MIDI CC — 手机端统一样式（Apple / iOS 设计语言）
+ *
+ * 设计决定见 docs/spec/shortcut-pad.md §9 T3：用户要求"照搬苹果那套"，不逐一拍配色细节。
+ * 这里只做两件事：把 iOS 的设计令牌（颜色/字阶/圆角/间隔）定义一次，再用**原有类名**覆盖
+ * 各页面的观感——标记结构基本不动，所以不会碰坏 id 与页面脚本。
+ *
+ * 覆盖的页面：/（推子）、/pad.html（快捷键面板）、/latency.html（延迟诊断）、
+ *            /calibrate-lift|flip|shake.html（校准向导）
+ * 不覆盖：开发调试页（fusion-calibrate*.html、pose-debug、vibrato-lab）——它们在 PC 上看。
+ *
+ * 浅色为主，并支持 prefers-color-scheme: dark（iOS 的深色也是这套令牌的另一组取值）。
+ */
+
+/* ── 设计令牌 ────────────────────────────────────────────────────────────── */
+:root {
+  /* iOS system colors（浅色） */
+  --bg: #f2f2f7;              /* systemGroupedBackground */
+  --card: #ffffff;            /* secondarySystemGroupedBackground */
+  --fill: #f2f2f7;            /* tertiarySystemFill，用于分段控件底色等 */
+  --blue: #007aff;            /* systemBlue */
+  --green: #34c759;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --yellow: #ffcc00;
+
+  /* iOS label / separator（浅色带透明度的黑） */
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, 0.60);   /* secondaryLabel */
+  --label-3: rgba(60, 60, 67, 0.30);   /* tertiaryLabel */
+  --sep: rgba(60, 60, 67, 0.29);       /* separator */
+  --sep-opaque: #c6c6c8;
+
+  --radius: 12px;             /* 卡片与按钮 */
+  --radius-lg: 16px;          /* 大卡片 */
+  --radius-cell: 14px;        /* 面板按钮 */
+  --gap: 16px;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+          "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+
+  --tap: transparent;         /* -webkit-tap-highlight-color */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --card: #1c1c1e;
+    --fill: #2c2c2e;
+    --blue: #0a84ff;
+    --green: #30d158;
+    --orange: #ff9f0a;
+    --red: #ff453a;
+    --yellow: #ffd60a;
+    --label: #ffffff;
+    --label-2: rgba(235, 235, 245, 0.60);
+    --label-3: rgba(235, 235, 245, 0.30);
+    --sep: rgba(84, 84, 88, 0.65);
+    --sep-opaque: #38383a;
+  }
+}
+
+/* ── 基座 ────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--label);
+  font-family: var(--font);
+  font-size: 17px;              /* iOS body */
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: var(--tap);
+  overscroll-behavior-y: none;
+}
+
+body {
+  min-height: 100%;
+  padding: calc(12px + env(safe-area-inset-top)) var(--gap)
+           calc(24px + env(safe-area-inset-bottom));
+}
+
+/* 页头：大标题 + 说明（iOS Large Title） */
+h1, .setup-title {
+  margin: 4px 0 6px;
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--label);
+}
+
+.setup-header { text-align: center; margin-bottom: 20px; }
+.setup-intro, .sub, .desc, .hint {
+  font-size: 15px;
+  color: var(--label-2);
+}
+.setup-intro { text-align: left; }
+.setup-intro ol { margin: 10px 0 0 1.15em; padding: 0; }
+.setup-intro li { margin-bottom: 6px; }
+
+a { color: var(--blue); text-decoration: none; }
+
+/* ── 导航（页面底部/顶部的细链接行） ─────────────────────────────────────── */
+.nav, .foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  margin-top: 22px;
+  font-size: 13px;
+  color: var(--label-2);
+}
+.nav a, .foot a { color: var(--label-2); }
+.foot code { font-family: var(--mono); font-size: 12px; }
+
+/* ── 卡片（iOS Inset Grouped） ───────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+/* 卡片内相邻区块用发丝线分隔 */
+.card h2 + .hint { margin-top: -4px; }
+
+/* ── 按钮（iOS 填充 / 淡色 / 纯文字） ────────────────────────────────────── */
+.btn, .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50px;
+  padding: 0 20px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--blue);
+  color: #fff;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 60ms ease;
+}
+.btn:active, .btn-primary:active { opacity: 0.75; transform: scale(0.985); }
+.btn:disabled { background: var(--fill); color: var(--label-3); cursor: not-allowed; }
+.btn-ghost {
+  background: var(--fill);
+  color: var(--blue);
+}
+.btn-sm { min-height: 34px; padding: 0 14px; font-size: 15px; border-radius: 9px; }
+.btn-back {
+  min-height: 34px; padding: 0 10px 0 2px;
+  background: none; border: none;
+  color: var(--blue); font: inherit; font-size: 17px; font-weight: 500;
+  cursor: pointer;
+}
+.btn-row, .row-btn { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+.btn-row > .btn, .row-btn > .btn { flex: 1; }
+
+/* 发送中/已暂停：iOS 里"进行中"用绿色、"暂停"用灰色 */
+.btn.send-on { background: var(--green); }
+.btn.send-off { background: var(--fill); color: var(--label-2); }
+
+/* ── 状态胶囊 ────────────────────────────────────────────────────────────── */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.status.on   { background: color-mix(in srgb, var(--green) 18%, transparent);  color: var(--green); }
+.status.wait { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+.status.off  { background: var(--fill); color: var(--label-2); }
+
+/* 校准状态徽标 */
+.cal-badge { padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.cal-badge.ok   { background: color-mix(in srgb, var(--green) 18%, transparent);  color: var(--green); }
+.cal-badge.warn { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+.link-cal { color: var(--blue); font-size: 15px; }
+.cal-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ── 表单（iOS 行式） ────────────────────────────────────────────────────── */
+.mode-setup, .cfg-row, .cc-cfg, .ch-cfg, .range-cfg, .depth-cfg, .cc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mode-label, .range-label { font-size: 15px; color: var(--label-2); }
+.cfg-select, .mode-select, .range-input {
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--fill);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 17px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.mode-desc { font-size: 15px; color: var(--label-2); }
+.mode-tag {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  background: var(--fill); color: var(--label-2); font-size: 13px; font-weight: 600;
+}
+
+/* ── 数值显示（推子页与校准页共用） ──────────────────────────────────────── */
+.pitch-display, .preview, .cc-label { text-align: center; }
+.pitch-label, .cc-label { font-size: 13px; color: var(--label-2); }
+.pitch-value, .cc-big {
+  font-family: var(--mono);
+  font-size: 56px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--label);
+}
+
+/* 进度条 / 条形图 */
+.bar-wrap, .bar-track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--fill);
+  overflow: hidden;
+}
+.bar-fill { height: 100%; background: var(--blue); border-radius: 999px; transition: width 60ms linear; }
+.bars { display: grid; gap: 8px; margin-top: 10px; }
+.bar-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--label-2); }
+.bar-line .name { width: 44px; }
+.bar-line .bar-track { flex: 1 1 auto; }
+.bar-line .num { width: 62px; text-align: right; font-family: var(--mono); }
+.bar-fill.raw  { background: var(--orange); }
+.bar-fill.filt { background: var(--blue); }
+
+/* ── 键值表（延迟诊断页） ────────────────────────────────────────────────── */
+.kv { width: 100%; border-collapse: collapse; }
+.kv td { padding: 9px 0; font-size: 15px; border-bottom: 1px solid var(--sep); }
+.kv tr:last-child td { border-bottom: none; }
+.kv .k { color: var(--label-2); }
+.kv .v { text-align: right; font-family: var(--mono); color: var(--label); font-weight: 600; }
+.kv .dim { color: var(--label-2); font-weight: 400; }
+
+/* ── 校准向导：步骤点 ───────────────────────────────────────────────────── */
+.steps { display: flex; gap: 8px; justify-content: center; margin: 6px 0 18px; }
+.step-dot {
+  width: 9px; height: 9px; border-radius: 999px;
+  background: var(--label-3);
+}
+.step-dot.active { background: var(--blue); transform: scale(1.25); }
+.step-dot.done   { background: var(--green); }
+.step-label { text-align: center; font-size: 15px; color: var(--label-2); margin-bottom: 12px; }
+
+/* 提示条 / 错误 / Toast（iOS：淡色底 + 同色文字） */
+.error {
+  font-size: 15px;
+  color: var(--red);
+  min-height: 20px;
+  text-align: center;
+}
+.err { font-size: 14px; color: var(--red); min-height: 18px; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 12px);
+  max-width: 88vw;
+  padding: 11px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff; font-size: 15px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.shake-note { font-size: 13px; color: var(--label-2); text-align: center; }
+
+/* ── 快捷键面板（pad.html） ─────────────────────────────────────────────── */
+/* 屏幕上的按钮：纯色填充 + 白字（iOS 主屏图标那种），颜色由布局逐格给 */
+.cell {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  padding: 8px;
+  border-radius: var(--radius-cell);
+  overflow: hidden;
+  background: var(--fill);
+  color: #fff;
+  font-size: clamp(15px, 5vw, 26px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  text-align: center;
+  word-break: break-word;
+  transition: transform 70ms ease, filter 70ms ease;
+}
+.cell.pressed { transform: scale(0.97); filter: brightness(1.18); }
+
+/* 页签 = iOS 分段控件（Segment Control） */
+#tabs {
+  background: var(--fill);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+.tab {
+  padding: 7px 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab.active {
+  background: var(--card);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
