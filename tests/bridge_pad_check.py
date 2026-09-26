@@ -114,14 +114,22 @@ check("页数固定：1 页的旧配置补齐到 6 页，格子也补满（手�
       and padded["pages"][0]["title"] == "轨道颜色" and padded["pages"][5]["title"] == "页 6",
       f"1 页 × 1 格输入 -> {len(padded['pages'])} 页 × {len(padded['pages'][0]['cells'])} 格")
 cleaned = server.pad_clean_layout({"pages": [{"title": "T", "cells": [
-    {"text": "x" * 99, "color": "#ff00ff"},          # 超长文字 + 调色板外的颜色
-    {"text": "ok", "color": server.PAD_COLORS[3]},
+    {"text": "x" * 99, "color": "#FF00FF"},          # 超长文字 + 大写 hex
+    {"text": "ok", "color": "#0a0"},                  # 3 位 hex 也合法
 ]}]})
-check("超长文字被截断、调色板外的颜色被拒",
+check("超长文字被截断；任意合法 hex 都被接受（并规范成小写）",
       len(cleaned["pages"][0]["cells"][0]["text"]) == server.PAD_TEXT_MAX
-      and cleaned["pages"][0]["cells"][0]["color"] == server.PAD_COLORS[0]
-      and cleaned["pages"][0]["cells"][1]["color"] == server.PAD_COLORS[3],
-      f"text {server.PAD_TEXT_MAX} 字上限，颜色 {cleaned['pages'][0]['cells'][1]['color']}")
+      and cleaned["pages"][0]["cells"][0]["color"] == "#ff00ff"
+      and cleaned["pages"][0]["cells"][1]["color"] == "#0a0",
+      f"text {server.PAD_TEXT_MAX} 字上限；#FF00FF -> {cleaned['pages'][0]['cells'][0]['color']}")
+
+bad_colors = server.pad_clean_layout({"pages": [{"cells": [
+    {"color": "red"}, {"color": "#12345"}, {"color": "url(x)"},
+    {"color": "#fff; background-image: url(http://x)"}, {"color": 123}, {"color": None},
+]}]})["pages"][0]["cells"]
+check("非法颜色一律退回默认（颜色会进手机的 style，不能放开成任意 CSS）",
+      all(c["color"] == server.PAD_COLORS[0] for c in bad_colors[:6]),
+      f"6 种非法输入 -> {[c['color'] for c in bad_colors[:6]]}")
 capped = server.pad_clean_layout({"pages": [{"title": "p%d" % i, "cells": []}
                                             for i in range(server.PAD_PAGES + 3)]})
 check("页数固定：多出来的页被丢掉（不增不删，永远 6 页）",
@@ -400,6 +408,23 @@ try:
           and "0–127" in app._pad_status_lbl.cget("text"),
           f"提示：{app._pad_status_lbl.cget('text')}")
     app._pad_note_var.set("77")
+
+    # 任意颜色：手输 hex 与预设色块走同一条路（D20）
+    app._pad_color_var.set("#12ab34")
+    app._pad_edit_color()
+    app._pad_commit()
+    saved_color = json.load(open(server.PAD_PREFS, encoding="utf-8"))
+    check("手输任意 hex：模型 / pad.json 一致",
+          app._pad_layout["pages"][0]["cells"][1]["color"] == "#12ab34"
+          and saved_color["pages"][0]["cells"][1]["color"] == "#12ab34",
+          app._pad_layout["pages"][0]["cells"][1]["color"])
+    app._pad_color_var.set("不是颜色")
+    app._pad_edit_color()
+    check("非法颜色被拒绝并提示，不写进模型",
+          app._pad_layout["pages"][0]["cells"][1]["color"] == "#12ab34"
+          and "#rrggbb" in app._pad_status_lbl.cget("text"),
+          f"提示：{app._pad_status_lbl.cget('text')}")
+    app._pad_color_var.set("#12ab34")
 
     # 拖动换位：把 winfo_containing 换成确定性桩，避免依赖真实命中测试
     class _Ev:

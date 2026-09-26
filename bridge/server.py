@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import colorchooser, ttk
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -694,6 +694,19 @@ PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在�
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
 PAD_DEFAULT_TITLE = "快捷键面板"
 PAD_TEXT_MAX = 24
+# 编辑器里的**预设**颜色（不再是白名单）：用户可以用取色器或十六进制任意填（D20）。
+# 校验只看"是不是合法颜色"——因为这个字符串会被写进手机上的 style.background，
+# 放宽成任意 CSS 就是一条注入通道。
+PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
+              "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
+PAD_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+def pad_color_valid(color) -> bool:
+    """只接受 #rgb / #rrggbb（颜色会进手机的 style.background，不能放开成任意 CSS）。"""
+    return isinstance(color, str) and bool(PAD_COLOR_RE.match(color.strip()))
+
+def pad_color_norm(color) -> str:
+    return color.strip().lower() if pad_color_valid(color) else PAD_COLORS[0]
 # 界面上"面板与推子共用端口"的选项文字（共用会让音源轨跟着弹音，见 PAD_PREFS 上方的说明）
 PAD_SAME_PORT = "（与推子相同）"
 # 固定调色板：全部是深色，白字可读。颜色无语义，纯粹为了一眼认出功能（spec D11）。
@@ -769,13 +782,12 @@ def default_pad_layout() -> dict:
     ]}
 
 def _pad_clean_cell(cell, trigger_id: int) -> dict:
-    """一格：文字 / 颜色 / **音符**。缺字段一律补默认值，非法值一律丢掉。"""
+    """一格：文字 / 颜色（任意合法 hex）/ **音符**。缺字段一律补默认值，非法值一律丢掉。"""
     out = {"text": "", "color": PAD_COLORS[0], "note": pad_note_for(trigger_id)}
     if isinstance(cell, dict):
         text = cell.get("text")
         if isinstance(text, str): out["text"] = text[:PAD_TEXT_MAX]
-        color = cell.get("color")
-        if isinstance(color, str) and color in PAD_COLORS: out["color"] = color
+        out["color"] = pad_color_norm(cell.get("color"))
         if pad_note_valid(cell.get("note")): out["note"] = cell["note"]
     return out
 
@@ -1437,11 +1449,28 @@ class BridgeApp:
         tk.Label(note_row, text="0–127（Nuendo 侧要在映射助手里学这一条；改完需要重学一次）",
                  font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(10, 0))
 
+        # 颜色：任意 hex（取色器或手输）+ 8 个预设色块（D20：不再限死调色板）
         pal = tk.Frame(self._pad_body, bg=BG)
-        pal.pack(fill=tk.X, padx=16, pady=(10, 4))
+        pal.pack(fill=tk.X, padx=16, pady=(8, 0))
         tk.Label(pal, text="颜色", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(0, 8))
+        self._pad_color_var = tk.StringVar()
+        self._pad_color_entry = tk.Entry(pal, textvariable=self._pad_color_var,
+                                         font=("Consolas", 10), bg=SURFACE, fg=FG,
+                                         insertbackground=FG, relief=tk.FLAT, width=9,
+                                         justify=tk.CENTER, state=tk.DISABLED)
+        self._pad_color_entry.pack(side=tk.LEFT, ipady=3)
+        self._pad_color_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_color())
+        self._pad_color_btn = tk.Button(pal, text="取色…", font=FONT_HINT, relief=tk.FLAT,
+                                        padx=8, pady=2, cursor="hand2", bg=SURFACE, fg=FG,
+                                        activebackground=BORDER, command=self._pad_pick_color)
+        self._pad_color_btn.pack(side=tk.LEFT, padx=(6, 10))
+
+        presets = tk.Frame(self._pad_body, bg=BG)
+        presets.pack(fill=tk.X, padx=16, pady=(6, 4))
+        tk.Label(presets, text="预设", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(0, 8))
+        self._pad_swatches = []
         for color in PAD_COLORS:
-            sw = tk.Frame(pal, bg=color, width=34, height=22, highlightthickness=2,
+            sw = tk.Frame(presets, bg=color, width=30, height=20, highlightthickness=2,
                           highlightbackground=BG, cursor="hand2")
             sw.pack(side=tk.LEFT, padx=2); sw.pack_propagate(False)
             sw.bind("<Button-1>", lambda _e, c=color: self._pad_set_color(c))
@@ -1464,7 +1493,7 @@ class BridgeApp:
                         fg=(FG if i == self._pad_page else FG_DIM), activebackground=BORDER)
         for slot, widgets in enumerate(self._pad_cells):
             cfg = cells[slot] if slot < len(cells) and isinstance(cells[slot], dict) else {}
-            color = cfg.get("color") if cfg.get("color") in PAD_COLORS else PAD_COLORS[0]
+            color = pad_color_norm(cfg.get("color"))
             note = pad_note_in_layout(self._pad_layout, self._pad_page * PAD_SLOTS + slot)
             if slot == self._pad_drop_slot and self._pad_drag_from is not None:
                 border = "#F59E0B"                      # 拖动的落点
@@ -1481,7 +1510,9 @@ class BridgeApp:
         """重画格子 + 同步两个输入框的显示与可用状态。"""
         if self._pad_win is None: return
         self._pad_redraw_cells()
-        entries = ((self._pad_entry, self._pad_text_var), (self._pad_note_entry, self._pad_note_var))
+        entries = ((self._pad_entry, self._pad_text_var),
+                   (self._pad_note_entry, self._pad_note_var),
+                   (self._pad_color_entry, self._pad_color_var))
         if self._pad_sel is None:
             for entry, var in entries:
                 entry.configure(state=tk.NORMAL); var.set(""); entry.configure(state=tk.DISABLED)
@@ -1492,6 +1523,8 @@ class BridgeApp:
             self._pad_note_entry.configure(state=tk.NORMAL)
             self._pad_note_var.set(str(pad_note_in_layout(
                 self._pad_layout, self._pad_page * PAD_SLOTS + self._pad_sel)))
+            self._pad_color_entry.configure(state=tk.NORMAL)
+            self._pad_color_var.set(pad_color_norm(cfg.get("color")))
 
     # ── 编辑动作 ──
 
@@ -1585,12 +1618,44 @@ class BridgeApp:
         self._pad_commit_soon()
 
     def _pad_set_color(self, color):
+        """预设色块：直接套用（合法 hex 都会走同一条路）。"""
         if self._pad_sel is None:
             self._pad_status("先点一个格子，再选颜色")
             return
         cell = self._pad_cell(self._pad_sel)
         if cell is None: return
-        cell["color"] = color
+        cell["color"] = pad_color_norm(color)
+        self._pad_status("")
+        self._pad_redraw()
+        self._pad_commit()
+
+    def _pad_edit_color(self):
+        """手输 hex：非法就提示、不写进模型（输入框不重画，免得吃掉正在敲的字符）。"""
+        if self._pad_sel is None: return
+        cell = self._pad_cell(self._pad_sel)
+        if cell is None: return
+        raw = self._pad_color_var.get()
+        if not pad_color_valid(raw):
+            if raw.strip(): self._pad_status("颜色要写成 #rgb 或 #rrggbb")
+            return
+        note = pad_color_norm(raw)
+        if note == cell.get("color"): return
+        cell["color"] = note
+        self._pad_status("")
+        self._pad_redraw_cells()
+        self._pad_commit_soon()
+
+    def _pad_pick_color(self):
+        """系统取色器：模态弹窗只在用户主动点按的时候出现（不像常驻调色板那样挡路）。"""
+        if self._pad_sel is None:
+            self._pad_status("先点一个格子，再取色"); return
+        cell = self._pad_cell(self._pad_sel)
+        if cell is None: return
+        _rgb, hexcolor = colorchooser.askcolor(color=pad_color_norm(cell.get("color")),
+                                               parent=self._pad_win, title="选择按钮颜色")
+        if not hexcolor: return                            # 用户取消
+        cell["color"] = pad_color_norm(hexcolor)
+        self._pad_status("")
         self._pad_redraw()
         self._pad_commit()
 
