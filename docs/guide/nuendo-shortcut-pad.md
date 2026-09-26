@@ -102,6 +102,43 @@ Bridge 窗口（展开态）→ **「快捷键面板…」** 按钮：
 
 ---
 
+## 面板端口在 Nuendo 里"看不见"时（真机踩到的坑）
+
+**症状**：Bridge 往面板端口（如 `PhonePad`）发消息，手机端一切正常，但 Nuendo 里毫无反应；
+把面板端口改成推子那个端口（`loopMIDI Port`）就立刻可用。
+
+**原因**：Nuendo 能看到的 MIDI 端口由它启动时的枚举决定，而 **Windows 上老式的 loopMIDI 端口可能只被 DirectMusic 后端看见**。
+判据（直接读文件，不用猜）：
+
+```
+%APPDATA%\Steinberg\Nuendo 15_64\Port Setup.xml
+```
+
+对比同一个端口在三种后端里的出现情况 —— 现场数据：
+
+| 端口 | DirectMusic | Windows MIDI | WinRT MIDI |
+|------|-------------|--------------|------------|
+| `loopMIDI Port`（老端口） | ✓ | ✓ | ✓ |
+| `PhonePad` / `loopMIDI Port 1`（新建的） | ✓ | ✗ | ✗ |
+
+只有 DirectMusic 有条目 → MIDI Remote 的设备枚举看不到它 → 设备永远收不到消息。
+
+**修法（Steinberg 的老"开关"机制）**：安装目录里有个 `midi port enabler` 文件夹，里面是两个
+**零字节标记文件**；把需要的那个**往上挪一层**到主程序目录（例如 `F:\Steinberg\Nuendo 15\`），然后**重启 Nuendo**：
+
+- `ignoreportfilter` —— 让 Nuendo 忽略端口过滤（显示所有 Windows MIDI 端口）。
+- `enableemulated` —— 启用被标记为"模拟"的端口。
+
+出处：Steinberg 论坛帖子引用的官方 KB *MIDI issues on Windows*（[帖子](https://forums.steinberg.net/t/extra-settings/661993/9)：
+"These files are used as a sort of 'switch'. To use these 'switches' just move the desired file from the
+folder 'midi port enabler' one level up to the main application directory"）。
+回滚 = 删掉主目录里的那两份副本。
+
+**替代路线**（不依赖端口枚举，推荐作为退路）：保留一个端口（`loopMIDI Port`，已验证可用），
+把触发消息换成**音源不会理的类型**——例如 **Polyphonic Aftertouch**（128 个编号、编号仍从 36 起）
+
+---
+
 ## 映射不生效时：先读配置，别猜
 
 Nuendo 把 MIDI Remote 设备与分配存在文本 JSON 里，直接看比在界面里翻快得多：
