@@ -289,6 +289,11 @@ class SensorHandler:
         # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
         self.pad_layout = load_pad_layout()
         self._pad_held: dict[int, tuple[float, int]] = {}   # 触发编号 → (按下时刻, 当时发的音符)
+        # PC 端确认灯：最近一次**按下**的 (序号, 触发编号, 音符, 按钮文字)，由 Tk 线程轮询捡走。
+        # 用**序号**而不是时间戳去重：Windows 上 time.monotonic() 的粒度约 15.6 ms，
+        # 同一 tick 内的两次按下的时间戳会一模一样，按时间戳比大小的去重会把后一次吃掉。
+        self._pad_flash_seq = 0
+        self.pad_flash: tuple[int, int, int, str] | None = None
 
     @property
     def client_count(self): return len(self._clients)
@@ -350,6 +355,11 @@ class SensorHandler:
         # the release must still close *that* note, not whatever the cell says now.
         self._pad_held[tid] = (time.monotonic(), note)
         self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
+        # PC 端确认灯的素材：**只有按下**才记（抬起不需要确认）。Tk 线程按序号捡走，
+        # 两边只共享这一个不可变元组，跨线程不碰 Tk 对象。
+        text = str(pad_cell_in_layout(self.pad_layout, tid).get("text") or "").strip()
+        self._pad_flash_seq += 1
+        self.pad_flash = (self._pad_flash_seq, tid, note, text)
 
     def pad_note_off(self, trigger_id: int) -> bool:
         """Send the matching Note Off. Returns whether a Note On was actually open."""
@@ -692,6 +702,10 @@ PAD_SLOTS = PAD_COLS * PAD_ROWS
 PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36（**默认值**；每格可在 PC 端改，见 T2）
 PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在通道分开，便于 DAW 侧过滤
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
+# PC 端的"按下确认灯"（置顶精简窗）：手机端在鸿蒙上拿不到马达（见 spec D25），
+# 所以改成在 PC 角落的置顶小窗上闪一下——用户在余光里确认，而且能看出**按的是哪一个**。
+PAD_FLASH_MS = 200            # 精简窗整窗闪一下的时长（余光看得见，又不至于烦）
+PAD_FLASH_TEXT_MS = 700       # 展开态只在状态行显示文字：那个窗口 500 ms 才轮询一次
 PAD_DEFAULT_TITLE = "快捷键面板"
 PAD_TEXT_MAX = 24
 # 编辑器里的**预设**颜色（不再是白名单）：用户可以用取色器或十六进制任意填（D20）。
@@ -770,6 +784,23 @@ def pad_note_in_layout(layout, trigger_id: int) -> int:
             note = cells[slot].get("note")
             if pad_note_valid(note): return note
     return pad_note_for(tid)
+
+def pad_cell_in_layout(layout, trigger_id: int) -> dict:
+    """按触发编号取那一格（页 = 编号 // 8，格 = 编号 % 8）；越界或缺失给空 dict。
+
+    给 PC 端的"按了哪一个"提示用——它显示的是**布局里的文字**，所以和手机上看到的一致。
+    """
+    try:
+        page_index, slot = divmod(int(trigger_id), PAD_SLOTS)
+    except (TypeError, ValueError):
+        return {}
+    pages = layout.get("pages") if isinstance(layout, dict) else None
+    if isinstance(pages, list) and 0 <= page_index < len(pages):
+        page = pages[page_index]
+        cells = page.get("cells") if isinstance(page, dict) else None
+        if isinstance(cells, list) and 0 <= slot < len(cells) and isinstance(cells[slot], dict):
+            return cells[slot]
+    return {}
 
 def pad_duplicate_notes(layout) -> dict[int, int]:
     """音符 → 出现次数（>1 即为重复）。重复不会禁止，但编辑器要把它显示出来。"""
@@ -967,6 +998,12 @@ class BridgeApp:
         # 精简模式（置顶，只看当前值与进度条）。尺寸只在本次运行内记住，不落盘。
         self._compact = False
         self._compact_geom = None
+        # 面板按下的确认灯：闪的状态全在 Tk 线程里，handler 只留一个"按下序号"
+        self._pad_flash_seen = 0
+        self._pad_flash_until = 0.0
+        self._pad_flash_text = ""
+        self._flash_on = False
+        self._flash_targets = []     # [(widget, 原底色)]，精简态重建时一起换掉
         # 快捷键面板：PC 端镜像 + 编辑器。布局由这里拥有（编辑不必先启动服务器）。
         self._pad_layout = load_pad_layout()
         self._pad_win = None
@@ -1110,7 +1147,11 @@ class BridgeApp:
             self._bar_mid = self._bar.create_line(0, 0, 0, 0, fill=FG_DIM, width=1)
             self._bar.bind("<Configure>", lambda _e: self._draw_bar(*self._bar_args))
             self._bar_args = (None, "cc")
-            tk.Frame(body, bg=BG).pack(fill=tk.BOTH, expand=True)   # 多余高度留白
+            spacer = tk.Frame(body, bg=BG)
+            spacer.pack(fill=tk.BOTH, expand=True)   # 多余高度留白
+            # 按下确认灯要闪的"整窗底色"就是这几个：换底色比画边框更显眼（余光可见）
+            self._flash_targets = [(body, BG), (top, BG), (spacer, BG), (self._bar, SURFACE)]
+            self._flash_on = False
 
             # 没有标题栏就得自己实现拖动与拉伸
             grip = tk.Label(body, text="◢", font=("Consolas", 9), bg=BG, fg=FG_DIM, cursor="size_nw_se")
@@ -1318,7 +1359,10 @@ class BridgeApp:
         if not connected: return "—"
         if not out: return "—"
         o = out[0]
-        return f"PB {o['value']}" if o["cc"] == "PB" else f"CC{o['cc']} {o['value']}"
+        if o["cc"] == "PB": return f"PB {o['value']}"
+        # 面板触发写进来的是 "N39"（音符号），不是 CC 号——直接拼 "CCN39" 会很难看
+        if str(o["cc"]).startswith("N"): return f"Note {o['cc']}"
+        return f"CC{o['cc']} {o['value']}"
 
     @staticmethod
     def _bar_norm(out):
@@ -1328,6 +1372,8 @@ class BridgeApp:
         o = out[0]
         if o["cc"] == "PB":
             return (o["value"] / 16383.0), "pb"
+        # 音符触发没有"位置"可言：进度条留空，而不是谎报一条满格
+        if str(o["cc"]).startswith("N"): return None, "cc"
         return (o["value"] / 127.0), "cc"
 
     def _draw_bar(self, norm, kind):
@@ -1724,20 +1770,67 @@ class BridgeApp:
             cc = self._handler.last_cc_output
             n = self._handler.client_count
             connected = n > 0
+            self._pick_up_pad_flash()
+            flashing = self._pad_flash_until > time.monotonic()
             if self._compact:
-                norm, kind = self._bar_norm(cc) if connected else (None, "cc")
-                self._bar_args = (norm, kind)
-                self._mon_value.config(text=self._value_text(cc, connected))
-                self._draw_bar(norm, kind)
+                if flashing:
+                    self._pad_flash_show()
+                else:
+                    self._pad_flash_hide()
+                    norm, kind = self._bar_norm(cc) if connected else (None, "cc")
+                    self._bar_args = (norm, kind)
+                    self._mon_value.config(text=self._value_text(cc, connected))
+                    self._draw_bar(norm, kind)
             else:
                 self._status_clients.config(text=f"clients: {n}")
-                if cc:
+                if flashing:
+                    self._status_cc.config(text=self._pad_flash_text)
+                elif cc:
                     o = cc[0]; self._status_cc.config(text=f"CC{o['cc']} Ch{o['channel']+1} = {o['value']}")
                     # Pulse dot
                     hue = GREEN if o['value'] > 0 else FG_DIM
                     self._indicator.itemconfig(self._dot, fill=hue)
                 else: self._status_cc.config(text="cc: --")
         self._status_timer = self.root.after(50 if self._compact else 500, self._poll_status)
+
+    # ── 面板按下的确认灯（PC 端） ─────────────────────────────────────────────
+    # 为什么在 PC 上做：手机端在鸿蒙上拿不到马达（spec D25），而用户操作时人就在电脑前，
+    # 余光扫到的置顶小窗比手机振一下更可靠——而且**能看出按的是哪一个按钮**。
+    # 它证明的是"手机 → Bridge → MIDI 已发出"，**不是**"宏已经在 DAW 里执行了"（那要状态回读，D13）。
+
+    def _pick_up_pad_flash(self):
+        """Bridge（asyncio 线程）把每次按下记在 handler.pad_flash 上，这里用同一个轮询捡起来。
+
+        跨线程只做"读一个不可变元组 + 比序号"，与 last_cc_output 同一套路：不碰 Tk 对象。
+        """
+        ev = getattr(self._handler, "pad_flash", None)
+        if not ev: return
+        seq, tid, note, text = ev
+        if seq <= self._pad_flash_seen: return
+        self._pad_flash_seen = seq
+        name = text or ("格 %d" % (int(tid) % PAD_SLOTS + 1))
+        self._pad_flash_text = "▶ %s   N%d" % (name, note)
+        window = PAD_FLASH_MS if self._compact else PAD_FLASH_TEXT_MS
+        self._pad_flash_until = time.monotonic() + window / 1000.0
+
+    def _pad_flash_show(self):
+        """整窗闪一下（不是画个边框：余光里看得见的是**大面积的颜色变化**）。"""
+        if not self._flash_on:
+            self._flash_on = True
+            for widget, _bg in self._flash_targets: widget.config(bg=GREEN)
+            back = getattr(self, "_mon_back", None)
+            if back is not None: back.config(bg=GREEN, fg=BG, highlightbackground=GREEN)
+            if getattr(self, "_mon_value", None) is not None: self._mon_value.config(fg=BG)
+        if getattr(self, "_mon_value", None) is not None:
+            self._mon_value.config(text=self._pad_flash_text)
+
+    def _pad_flash_hide(self):
+        if not self._flash_on: return
+        self._flash_on = False
+        for widget, bg in self._flash_targets: widget.config(bg=bg)
+        back = getattr(self, "_mon_back", None)
+        if back is not None: back.config(bg=SURFACE, fg=FG_DIM, highlightbackground=BORDER)
+        if getattr(self, "_mon_value", None) is not None: self._mon_value.config(fg=FG)
 
     def _show_error(self, msg: str):
         """Say it in the window: the packaged exe has no console, so a startup failure that
@@ -1757,7 +1850,7 @@ class BridgeApp:
         for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
                      "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
                      "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn",
-                     "_status_pad", "_pad_port_var", "_pad_port_box"):
+                     "_status_pad", "_pad_port_var", "_pad_port_box", "_flash_targets"):
             if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
 

@@ -248,6 +248,24 @@ asyncio.run(h._on_trigger({"kind": "trigger", "id": 9999, "phase": "down"}))
 asyncio.run(h._on_trigger({"kind": "trigger", "id": None, "phase": "down"}))
 check("越界编号什么都不发", h.midi.notes == [], f"{h.midi.notes}")
 
+# ── 3b. PC 端确认灯：Bridge 记下"按了哪一个"，由 Tk 轮询捡走 ────────────────────
+# 手机端在鸿蒙上拿不到马达（spec D25），改成在人就在旁边的 PC 置顶小窗上闪一下；
+# 所以 Bridge 必须把"按下"这件事记下来（含布局里的按钮文字），而"抬起"不记。
+reset_pad_file()
+flash, _ = handler_with_midi()
+flash.set_pad_layout({"pages": [{"cells": [{"text": "停止"}, {"text": ""}]}]})
+asyncio.run(flash._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
+first = flash.pad_flash
+check("按下时记一条确认灯素材（序号 / 编号 / 音符 / 按钮文字）",
+      first is not None and first[1] == 0 and first[2] == 36 and first[3] == "停止",
+      f"{first}")
+asyncio.run(flash._on_trigger({"kind": "trigger", "id": 0, "phase": "up"}))
+check("抬起不改确认灯（只有按下才需要确认）", flash.pad_flash == first, f"{flash.pad_flash}")
+asyncio.run(flash._on_trigger({"kind": "trigger", "id": 1, "phase": "down"}))
+check("序号递增：两次按下一定区分得开（时间戳在同一 tick 内会相等）",
+      flash.pad_flash[0] == first[0] + 1 and flash.pad_flash[3] == "",
+      f"seq {first[0]} -> {flash.pad_flash[0]}（第二格没写文字 -> 空串，Tk 侧退回“格 N”）")
+
 # ── 3c. 触发发的音符来自布局（T2 解绑之后的行为） ──────────────────────────────
 custom, _ = handler_with_midi()
 custom.set_pad_layout({"pages": [{"cells": [{"note": 60}, {"note": 61}]}]})

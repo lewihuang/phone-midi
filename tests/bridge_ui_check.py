@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.join(ROOT, "bridge"))
 import server
 
 fails = []
+total = 0
 def check(name, ok, detail=""):
+    global total
+    total += 1
     print(("PASS  " if ok else "FAIL  ") + name.ljust(44) + detail)
     if not ok:
         fails.append(name)
@@ -33,6 +36,15 @@ check("值：弯音显示为 PB 计数", server.BridgeApp._value_text(pb_out, Tr
 check("值：CC 显示为 CC 号 + 值", server.BridgeApp._value_text(cc_out, True) == "CC1 64",
       server.BridgeApp._value_text(cc_out, True))
 check("值：没连接时不显示陈旧值", server.BridgeApp._value_text(cc_out, False) == "—", "—")
+# 面板触发往 last_cc_output 里写的是 "N39"（音符号）：拼成 "CCN39 127" 很难看，
+# 而且进度条会谎报一条满格——音符没有"位置"可言。
+note_out = [{"cc": "N39", "channel": server.PAD_CHANNEL, "value": 127}]
+check("值：面板音符显示为 Note N39（不是 CCN39）",
+      server.BridgeApp._value_text(note_out, True) == "Note N39",
+      server.BridgeApp._value_text(note_out, True))
+check("进度条：面板音符留空，不乱报满格",
+      server.BridgeApp._bar_norm(note_out) == (None, "cc"),
+      f"{server.BridgeApp._bar_norm(note_out)}")
 norm_pb, kind_pb = server.BridgeApp._bar_norm(pb_out)
 norm_cc, kind_cc = server.BridgeApp._bar_norm(cc_out)
 check("进度条：弯音从中线两侧长", kind_pb == "pb" and abs(norm_pb - 8809 / 16383) < 1e-9,
@@ -51,6 +63,7 @@ class FakeHandler:
     def __init__(self):
         self.last_cc_output = cc_out
         self.client_count = 1
+        self.pad_flash = None
 
 try:
     app.root.withdraw()
@@ -130,6 +143,39 @@ try:
           f"min={app.root.minsize()}")
     check("精简态显示当前 CC 值", app._mon_value.cget("text") == "CC1 64",
           app._mon_value.cget("text"))
+
+    # ── 面板按下的确认灯（PC 端闪一下） ─────────────────────────────────────
+    # 手机端在鸿蒙上拿不到马达（spec D25），改成在人就在旁边的 PC 上闪：整窗变绿 200ms，
+    # 并把"按了哪一个"写出来。Bridge（asyncio 线程）只记一个时间戳元组，这里轮询捡走。
+    app._handler.pad_flash = (1, 8, 39, "停止")
+    app._poll_status()
+    lit = [w.cget("bg") for w, _bg in app._flash_targets]
+    check("面板触发：精简窗整窗闪 + 显示是哪一个按钮",
+          app._mon_value.cget("text") == "▶ 停止   N39" and lit and all(b == server.GREEN for b in lit)
+          and app._mon_value.cget("fg") == server.BG,
+          f"{app._mon_value.cget('text')!r} bg={lit[:1]}")
+    check("闪的底色覆盖整窗（body/top/留白/进度条都在名单里）",
+          len(app._flash_targets) == 4, f"{len(app._flash_targets)} 个部件")
+    app._poll_status()      # 同一事件不重复捡（时间戳不会前进）
+    check("同一个触发只闪一次（按按下序号去重）",
+          app._mon_value.cget("text") == "▶ 停止   N39", "轮询重复跑也还是那一次")
+
+    app._pad_flash_until = 0        # 200ms 到了
+    app._handler.last_cc_output = cc_out
+    app._poll_status()
+    restored = [w.cget("bg") for w, _bg in app._flash_targets]
+    check("闪完自动复原：底色、字色、值都回到原样",
+          restored == [server.BG, server.BG, server.BG, server.SURFACE]
+          and app._mon_value.cget("fg") == server.FG
+          and app._mon_value.cget("text") == "CC1 64",
+          f"bg={restored} text={app._mon_value.cget('text')!r}")
+
+    app._handler.pad_flash = (2, 0, 36, "")     # 没写文字的格子
+    app._poll_status()
+    check("没写文字的格子退回“格 N”，不会显示成空",
+          app._mon_value.cget("text") == "▶ 格 1   N36", app._mon_value.cget("text"))
+    app._pad_flash_until = 0
+    app._poll_status()
 
     # 无标题栏 ⇒ 拖动与拉伸必须自己实现，而且下限要守住
     class _Ev:
@@ -232,5 +278,5 @@ finally:
     try: app.root.destroy()
     except Exception: pass
 
-print(f"\n{33 - len(fails)}/33 checks passed")
+print(f"\n{total - len(fails)}/{total} checks passed")
 sys.exit(1 if fails else 0)
