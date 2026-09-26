@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>手机推子 · MIDI Deck</title>
+<link rel="stylesheet" href="ios.css?v=6">
+<style>
+  /* 页面专属：单栏 360px。面板切换靠 .hidden / .show（app.js 在用这两个类名，必须保留）。 */
+  body { display: flex; flex-direction: column; align-items: center; }
+  .nav { width: 100%; max-width: 360px; }
+  .status { margin-bottom: 16px; }
+  .setup, .runtime { width: 100%; max-width: 360px; }
+  .setup { display: flex; flex-direction: column; align-items: center; }
+  .setup.hidden { display: none; }
+  .runtime { display: none; flex-direction: column; align-items: center; }
+  .runtime.show { display: flex; }
+  .runtime-head { width: 100%; display: flex; align-items: center; justify-content: space-between;
+                  gap: 8px; margin-bottom: 12px; }
+  .runtime-mode { font-size: 13px; color: var(--label-2); text-align: right; flex: 1; }
+  .runtime-mode strong { color: var(--label); }
+  .cal-row.hidden { display: none; }
+  .pitch-display { margin: 4px 0 18px; }
+  .pitch-value { font-size: 72px; }
+  /* 进度条：早期版本就是这条——**必须有宽度**，否则在 align-items:center 的列里会被压成 0 宽看不见 */
+  .bar-wrap { width: 100%; height: 12px; margin: 0 0 18px; }
+  /* 映射行与 CC 行各给足高度，不要挤到一起 */
+  .cc-row { width: 100%; margin: 2px 0 12px; line-height: 1.7; }
+  .cc-row > span { padding: 2px 0; }
+  .cfg-row { width: 100%; margin-top: 10px; row-gap: 10px; }
+  .cc-tag { background: var(--fill); padding: 3px 8px; border-radius: 6px; color: var(--blue); }
+  .cc-val { font-weight: 600; }
+  .btn { width: 100%; margin-top: 12px; }
+  .btn.send-on, .btn.send-off { max-width: 160px; margin-top: 0; flex: 1; }
+  .btn-row { width: 100%; margin-top: 18px; }
+  .cfg-row { display: none; }
+  .cfg-row.show { display: flex; }
+  .cfg-select { max-width: 66px; min-height: 32px; padding: 0 4px; font-size: 13px; }
+  .range-input { width: 58px; min-height: 32px; text-align: center; font-family: var(--mono); }
+  .error { margin-top: 10px; }
+  .shake-note { margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .brand { position: fixed; bottom: 10px; right: 12px; font-size: 10px; color: var(--label-3);
+           text-align: right; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<nav class="nav"><a href="/">← MIDI Deck</a></nav>
+
+<div class="status off" id="status">● 未连接</div>
+
+<div class="setup" id="setupPanel">
+
+  <header class="setup-header">
+    <h1 class="setup-title">手机推子</h1>
+  </header>
+
+  <div class="mode-setup" id="modeSetup">
+    <label class="mode-label" for="modeSelect">控制方式</label>
+    <select class="mode-select" id="modeSelect" aria-label="选择控制方式">
+      <option value="A">A · 抬手推子</option>
+      <option value="B">B · 翻转推子</option>
+      <option value="C">C · 摇晃弯音</option>
+    </select>
+
+    <div class="cal-row" id="calRow">
+      <span class="cal-badge warn" id="calBadge">未校准</span>
+    </div>
+  </div>
+
+  <!-- 校准入口做成明显的按钮（原来是一行小字链接，用户要求"做成一个明显的按钮可以点击进入"） -->
+  <a class="btn btn-primary" id="calLink" href="/calibrate-lift.html">校准抬手范围</a>
+
+  <button class="btn" id="btnStart" onclick="start()" disabled>启动 · 抬手推子</button>
+
+  <!-- 只在真正需要说明时才有字（例如"尚未校准，可先校准或仅预览"）；不再有"点击启动传感器…"那类引导语 -->
+  <p class="hint" id="hint"></p>
+
+</div>
+
+<div class="runtime" id="runtimePanel">
+
+  <div class="runtime-head">
+    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">← 返回</button>
+    <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
+  </div>
+
+  <div class="pitch-display">
+    <div class="pitch-value" id="pitchDeg">—</div>
+  </div>
+
+  <div class="bar-wrap">
+    <div class="bar-fill" id="bar" style="width: 50%"></div>
+  </div>
+
+  <div class="cc-row">
+    <span>映射</span>
+    <span class="cc-tag" id="ccTag">CC1 Ch1</span>
+    <span>→</span>
+    <span class="cc-val" id="ccVal">—</span>
+  </div>
+
+  <p class="shake-note" id="modeNote" style="display:none"></p>
+
+  <div class="cfg-row" id="cfgRow">
+    <span class="range-label cc-cfg">CC</span>
+    <input class="range-input cc-cfg" id="selCc" type="number" value="1" min="0" max="127" step="1">
+    <span class="range-label cc-cfg">Ch</span>
+    <select class="cfg-select ch-cfg" id="selCh"></select>
+    <span class="range-label depth-cfg">深度</span>
+    <input class="range-input depth-cfg" id="inDepth" type="number" value="1" min="0.25" max="2" step="0.05">
+    <input class="range-input range-cfg" id="inMin" type="number" value="0" step="0.01">
+    <span class="range-label range-cfg" id="rangeSep">~</span>
+    <input class="range-input range-cfg" id="inMax" type="number" value="1" step="0.01">
+    <span class="range-label range-cfg" id="rangeUnit"></span>
+  </div>
+
+  <div class="error" id="error"></div>
+
+  <div class="btn-row" id="btnRow">
+    <button class="btn send-on" id="btnSend" onclick="toggleSend()">发送中</button>
+  </div>
+
+</div>
+
+<div class="brand"><br>Powered by Levi黄</div>
+
+<script src="fusion.js?v=23"></script>
+
+<!-- vibrato.js is only loaded for its keep-awake helper here; the rotational vibrato engine
+     itself is no longer wired to any mode (it lives on /vibrato-lab.html for experiments). -->
+<script src="vibrato.js?v=23"></script>
+
+<script src="app.js?v=24"></script>
+
+</body>
+</html>

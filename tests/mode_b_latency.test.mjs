@@ -216,7 +216,7 @@ check('stored anchors map to t = 0 and t = 1 exactly',
 
 // ── 4. end to end: the page sends the current sample, and only from the attitude ─────────────
 function loadPage(mode) {
-  const html = fs.readFileSync(web('index.html'), 'utf8');
+  const html = fs.readFileSync(web('fader.html'), 'utf8');
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
   const nodes = {};
   const mk = (id, tag) => ({
@@ -230,7 +230,7 @@ function loadPage(mode) {
   const document = {
     hidden: false,
     getElementById(id) {
-      if (!ids.has(id)) throw new Error(`getElementById('${id}') is not in index.html`);
+      if (!ids.has(id)) throw new Error(`getElementById('${id}') is not in fader.html`);
       return (nodes[id] ||= mk(id));
     },
     createElement: (tag) => mk('new-' + tag, tag),

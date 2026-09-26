@@ -5,7 +5,8 @@ import vm from 'node:vm';
 import { web } from './_paths.mjs';
 
 const pages = {
-  index: { html: 'index.html', scripts: ['fusion.js', 'vibrato.js', 'app.js'] },
+  home: { html: 'index.html', scripts: [] },
+  fader: { html: 'fader.html', scripts: ['fusion.js', 'vibrato.js', 'app.js'] },
   lab: { html: 'vibrato-lab.html', scripts: ['vibrato.js', 'vibrato-lab.js'] },
   latency: { html: 'latency.html', scripts: ['fusion.js', 'latency.js'] },
   pad: { html: 'pad.html', scripts: ['pad.js'] },
@@ -141,8 +142,39 @@ function check(name, ok, detail) {
 // ── the main page ────────────────────────────────────────────────────────────
 {
   // app.js needs fusion.js's API surface; stub just what it touches at load time.
-  const { win } = loadPage('index');
-  check('index: scripts load with vibrato.js', !!win.PhoneMidiVibrato && !!win.PhoneMidiFusion);
+  const { win } = loadPage('fader');
+  check('fader: scripts load with vibrato.js', !!win.PhoneMidiVibrato && !!win.PhoneMidiFusion);
+
+  // 2026-09-26 手机端改版：删引导语、删模式说明、校准做成按钮、删 lift(cc) 行、隐藏延迟诊断、
+  // 进度条必须有宽度（否则在 align-items:center 的列里会被压成 0 宽，用户就"看不到推子状态"了）。
+  const h = htmlOf('fader');
+  // 注释里会**提到**这些词（记录"为什么删掉"），所以先剥掉注释再看真正的标记。
+  const hTags = h.replace(/<!--[\s\S]*?-->/g, '');
+  check('fader: 删掉了大段介绍与各模式的使用说明',
+    !/setup-intro/.test(hTags) && !/id="modeDesc"/.test(hTags) && !/点击启动/.test(hTags),
+    '介绍段落 / modeDesc / “点击启动传感器…” 都不在了');
+  check('fader: 校准是明显的按钮，不再是行内小字链接',
+    /class="btn btn-primary" id="calLink"/.test(h) && !/class="link-cal"/.test(h),
+    '校准抬手范围 = 主按钮样式');
+  check('fader: 运行界面删掉了 lift(cc) 那一行',
+    !/id="unitLabel"/.test(hTags), '只留大数值 + 进度条 + 映射行');
+  check('fader: 进度条有自己的宽度（看得见推子状态）',
+    /\.bar-wrap\s*\{[^}]*width:\s*100%/.test(h) && /id="bar"/.test(h),
+    '早期版本那条进度条回来了');
+  check('fader: 手机端不再暴露延迟诊断入口（页面还在，只是不摆在界面上）',
+    !/latency\.html/.test(h), '延迟页仍可用 /latency.html 直接打开');
+  check('fader: 映射行与 CC 行各自留了高度',
+    /\.cc-row\s*\{[^}]*line-height/.test(h) && /\.cfg-row\s*\{[^}]*row-gap/.test(h),
+    '不会挤到一起');
+  check('fader: 有回首页的导航', /<a href="\/">← MIDI Deck<\/a>/.test(h), '← MIDI Deck');
+}
+
+{
+  // 首页（MIDI Deck）只有模块列表，没有脚本：它不能依赖任何 id
+  const home = loadPage('home');
+  check('home: 首页只是模块列表，不加载任何脚本',
+    files.home.length === 0 && Object.keys(home.win).length > 0,
+    `${htmlOf('home').includes('/fader.html') ? '有' : '缺'} 推子入口 / ${htmlOf('home').includes('/pad.html') ? '有' : '缺'} 模拟按钮入口`);
 }
 
 {
@@ -334,7 +366,7 @@ function check(name, ok, detail) {
     !/\.cell\.pressed\s*\{[^}]*box-shadow/.test(css) && !/\.cell\.fired\s*\{[^}]*box-shadow/.test(css),
     '按下的证据只有尺寸 + 明暗，不加形状');
 
-  const tuned = ['index', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
+  const tuned = ['home', 'fader', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
   const straight = tuned.filter((p) => !/ios\.css/.test(htmlOf(p)));
   check('theme: every phone page uses the shared stylesheet',
     straight.length === 0, straight.length ? `missing on ${straight.join(',')}` : `${tuned.length} pages`);

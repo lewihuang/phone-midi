@@ -73,11 +73,12 @@ def main():
         check('packaged fusion.js has no Mode B filter left',
               'FLIP_STABILIZER' not in fj and 'feedFlipMotion' not in fj and 'tuning/flip' not in fj,
               'no FLIP_STABILIZER / feedFlipMotion / tuning storage')
-    if 'web/index.html' in toc:
-        ih = ar.extract(toc['web/index.html']).decode('utf-8', 'ignore')
+    if 'web/fader.html' in toc:
+        ih = ar.extract(toc['web/fader.html']).decode('utf-8', 'ignore')
         # Derive the expected cache-buster from the source rather than hardcoding it: a literal
         # here fails on every version bump while telling us nothing the byte comparison does not.
-        src = open(os.path.join(WEB, 'index.html'), encoding='utf-8').read()
+        # 注意：带脚本的页面现在是 fader.html（首页 index.html 只是模块列表，没有任何脚本）。
+        src = open(os.path.join(WEB, 'fader.html'), encoding='utf-8').read()
         pattern = r'(?:fusion|app|vibrato|latency|pad|calibrate-wizard)\.js\?v=\d+'
         want, have = set(re.findall(pattern, src)), set(re.findall(pattern, ih))
         check('packaged cache-busters match the source page',

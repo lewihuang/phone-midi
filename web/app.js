@@ -24,7 +24,6 @@
   const elRuntimePanel = document.getElementById('runtimePanel');
 
   const elModeSelect = document.getElementById('modeSelect');
-  const elModeDesc = document.getElementById('modeDesc');
   const elCalRow = document.getElementById('calRow');
   const elCalBadge = document.getElementById('calBadge');
   const elCalLink = document.getElementById('calLink');
@@ -33,7 +32,6 @@
 
   const elPitchDeg = document.getElementById('pitchDeg');
 
-  const elUnitLabel = document.getElementById('unitLabel');
 
   const elBar = document.getElementById('bar');
 
@@ -270,7 +268,6 @@
     const m = MODES[modeId];
     if (!m) return;
     if (elModeSelect) elModeSelect.value = modeId;
-    if (elModeDesc) elModeDesc.textContent = m.desc;
     if (!elCalRow) return;
     if (m.calMode !== 'none' && m.calibrateHref) {
       elCalRow.classList.remove('hidden');
@@ -311,24 +308,29 @@
 
     if (m.calMode === 'required' && !hasModeCalibration(m)) {
 
-      elHint.textContent = m.name + ' 尚未校准，可先校准或启动后仅预览（不发送有效 CC）';
+      setHint(m.name + ' 尚未校准，可先校准或启动后仅预览（不发送有效 CC）');
 
     } else if (m.calMode === 'required') {
 
-      elHint.textContent = '点击启动传感器；请先完成上方校准';
+      setHint('');
 
     } else if (m.calMode === 'optional' && !hasModeCalibration(m)) {
 
-      elHint.textContent = m.vibrato
-        ? '点击启动；力度是估算值（去「力度校准」用你自己的揉弦定标更准）'
-        : '点击启动传感器；力度刻度是固定值（想按自己的力度精调可先校准）';
+      setHint(m.vibrato
+        ? '力度是估算值（去「力度校准」用你自己的揉弦定标更准）'
+        : '力度刻度是固定值（想按自己的力度精调可先校准）');
 
     } else {
 
-      elHint.textContent = '点击启动传感器';
+      setHint('');
 
     }
 
+  }
+
+  /** 提示行是**可选**的：用户要求删掉"点击启动传感器…"那类字样，页面上已经没有这个元素了。 */
+  function setHint(text) {
+    if (elHint) elHint.textContent = text || '';
   }
 
 
@@ -923,7 +925,6 @@
 
     if (elRuntimeModeName) elRuntimeModeName.textContent = m.name;
 
-    elUnitLabel.textContent = m.label + (m.unit ? ' (' + m.unit + ')' : '');
 
 
 
@@ -1443,7 +1444,7 @@
 
     if (!F) {
 
-      elHint.textContent = '校准模块未加载，请刷新页面后重试';
+      setHint('校准模块未加载，请刷新页面后重试');
 
       elBtn.disabled = true;
 

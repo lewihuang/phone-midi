@@ -46,7 +46,8 @@ if (!EDGE) {
 }
 
 const PAGES = [
-  ['index', '/'],
+  ['index', '/'],                 // 首页 = MIDI Deck 的功能模块列表
+  ['fader', '/fader.html'],       // 手机推子（设置态；运行态要看真机或 %TEMP% 里的预览页）
   ['calibrate-lift', '/calibrate-lift.html'],
   ['calibrate-flip', '/calibrate-flip.html'],
   ['calibrate-shake', '/calibrate-shake.html'],

@@ -289,11 +289,6 @@ class SensorHandler:
         # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
         self.pad_layout = load_pad_layout()
         self._pad_held: dict[int, tuple[float, int]] = {}   # 触发编号 → (按下时刻, 当时发的音符)
-        # PC 端确认灯：最近一次**按下**的 (序号, 触发编号, 音符, 按钮文字)，由 Tk 线程轮询捡走。
-        # 用**序号**而不是时间戳去重：Windows 上 time.monotonic() 的粒度约 15.6 ms，
-        # 同一 tick 内的两次按下的时间戳会一模一样，按时间戳比大小的去重会把后一次吃掉。
-        self._pad_flash_seq = 0
-        self.pad_flash: tuple[int, int, int, str] | None = None
 
     @property
     def client_count(self): return len(self._clients)
@@ -355,11 +350,6 @@ class SensorHandler:
         # the release must still close *that* note, not whatever the cell says now.
         self._pad_held[tid] = (time.monotonic(), note)
         self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
-        # PC 端确认灯的素材：**只有按下**才记（抬起不需要确认）。Tk 线程按序号捡走，
-        # 两边只共享这一个不可变元组，跨线程不碰 Tk 对象。
-        text = str(pad_cell_in_layout(self.pad_layout, tid).get("text") or "").strip()
-        self._pad_flash_seq += 1
-        self.pad_flash = (self._pad_flash_seq, tid, note, text)
 
     def pad_note_off(self, trigger_id: int) -> bool:
         """Send the matching Note Off. Returns whether a Note On was actually open."""
@@ -662,20 +652,27 @@ def _local_ip():
     ips = _local_ips()
     return ips[0] if ips else "127.0.0.1"
 
-# 窗口尺寸的持久化。
-# 只记**精简模式**的尺寸与位置：它是放在 DAW 角落里的监看窗，位置必须稳定；标准窗口每次
-# 回到默认位置（居中）即可，用户明确要求不要记忆它。
+# 窗口与选择的持久化（`%APPDATA%\phone-midi-bridge\window.json`）。
+# 记：两个窗口各自的尺寸与位置、上次用的 MIDI 输出端口名、上次用的面板端口名。
+# 关于标准窗：**早期契约是"标准窗固定 480×420、不记忆位置"**（那八轮真机反馈换来的），
+# 但用户 2026-09-26 明确要求"记住用户上一次调整的软件 ui 大小及位置"，所以改成两个窗口都记。
 WINDOW_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "window.json"
+_PREF_PAIRS = ("compact", "compact_pos", "standard", "standard_pos")
 
 def load_window_prefs() -> dict:
     try:
         with open(WINDOW_PREFS, "r", encoding="utf-8") as f:
             data = json.load(f)
         out = {}
-        for key in ("compact", "compact_pos"):
+        for key in _PREF_PAIRS:
             v = data.get(key)
             if isinstance(v, list) and len(v) == 2 and all(isinstance(n, (int, float)) for n in v):
                 out[key] = [int(v[0]), int(v[1])]
+        # 端口名：只在"是个非空字符串"时才认（设备拔了/改名了由调用方兜底）
+        for key in ("midi_out", "pad_port"):
+            v = data.get(key)
+            if isinstance(v, str) and v.strip():
+                out[key] = v.strip()
         return out
     except Exception:
         return {}
@@ -702,10 +699,6 @@ PAD_SLOTS = PAD_COLS * PAD_ROWS
 PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36（**默认值**；每格可在 PC 端改，见 T2）
 PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在通道分开，便于 DAW 侧过滤
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
-# PC 端的"按下确认灯"（置顶精简窗）：手机端在鸿蒙上拿不到马达（见 spec D25），
-# 所以改成在 PC 角落的置顶小窗上闪一下——用户在余光里确认，而且能看出**按的是哪一个**。
-PAD_FLASH_MS = 200            # 精简窗整窗闪一下的时长（余光看得见，又不至于烦）
-PAD_FLASH_TEXT_MS = 700       # 展开态只在状态行显示文字：那个窗口 500 ms 才轮询一次
 PAD_DEFAULT_TITLE = "快捷键面板"
 PAD_TEXT_MAX = 24
 # 编辑器里的**预设**颜色（不再是白名单）：用户可以用取色器或十六进制任意填（D20）。
@@ -840,13 +833,16 @@ def default_pad_layout() -> dict:
     ]}
 
 def _pad_clean_cell(cell, trigger_id: int) -> dict:
-    """一格：文字 / 颜色（任意合法 hex）/ **音符**。缺字段一律补默认值，非法值一律丢掉。"""
+    """一格：文字 / 颜色（任意合法 hex）/ **音符**。缺字段一律补默认值，非法值一律丢掉。
+
+    音符**不接受手改**（用户 2026-09-26："删除音符自由输入的功能，仅使用软件提供的默认值"）：
+    永远是 `36 + 触发编号`，所以旧配置里存的音符也一律被按位置重算（D31）。
+    """
     out = {"text": "", "color": PAD_COLORS[0], "note": pad_note_for(trigger_id)}
     if isinstance(cell, dict):
         text = cell.get("text")
         if isinstance(text, str): out["text"] = text[:PAD_TEXT_MAX]
         out["color"] = pad_color_norm(cell.get("color"))
-        if pad_note_valid(cell.get("note")): out["note"] = cell["note"]
     return out
 
 def pad_clean_layout(layout) -> dict:
@@ -947,13 +943,23 @@ def bind_server_socket(host: str, port: int, backlog: int = 128):
     raise last
 
 # ── GUI ─────────────────────────────────────────────────────────────────────
-# Industrial: #0B0C0A surface, mono type, #00E676 accent, flat structure
+# Industrial: #0B0C0A surface, #00E676 accent, flat structure
+#
+# 字体（用户要求："修改 pc 端的字体为等线字体，英文字体用 Times New Roman"）：
+# Tk 的字体只能指定**一个家族**，没有 per-glyph 回退，所以按"这个控件上的字是什么"来选：
+#   · 显示中文的控件 → DengXian（等线，Windows 自带；Tk 里这个 ASCII 名能解析到"等线"）
+#   · 纯英文/数字的控件（端口名、CC 值、START/QUIT、作者行）→ Times New Roman
+# 混排的长文本一律用 DengXian（它自己带拉丁字形），避免一句话里两种字体。
+FONT_CJK = "DengXian"
+FONT_LATIN = "Times New Roman"
 
-FONT = ("Consolas", 10)
-FONT_BOLD = ("Consolas", 10, "bold")
-FONT_H1 = ("Microsoft YaHei UI", 16, "bold")
-FONT_H2 = ("Consolas", 12, "bold")
-FONT_HINT = ("Microsoft YaHei UI", 9)
+FONT = (FONT_LATIN, 10)                 # 纯英文/数字的默认
+FONT_BOLD = (FONT_LATIN, 10, "bold")
+FONT_CN = (FONT_CJK, 10)                # 中文控件
+FONT_CN_BOLD = (FONT_CJK, 10, "bold")
+FONT_H1 = (FONT_CJK, 16, "bold")
+FONT_H2 = (FONT_CJK, 12, "bold")
+FONT_HINT = (FONT_CJK, 9)
 BG = "#0B0C0A"
 SURFACE = "#151613"
 BORDER = "#2A2B28"
@@ -962,7 +968,7 @@ FG_DIM = "#5C645E"
 GREEN = "#00E676"
 AMBER = "#FFB800"
 RED = "#FF3B30"
-FONT_MONO_MID = ("Consolas", 18, "bold")   # 精简模式的值，够大又省高度
+FONT_MONO_MID = (FONT_LATIN, 18, "bold")   # 精简模式的值，够大又省高度
 # 精简模式：细长条。默认高度按内容给足（值那一行 + 细进度条 + 留白），下限比默认再矮一点，
 # 这样"再压矮一点"是用户自己能拖的事，不必改代码。
 COMPACT_MIN_W, COMPACT_MIN_H = 420, 84
@@ -995,15 +1001,12 @@ class BridgeApp:
         self._win_prefs = load_window_prefs()   # sizes remembered from the last run
         # Same dead-man timer as the CLI: a phone that goes quiet must not leave the DAW bent.
         self._pb_idle_sec = 0.5
-        # 精简模式（置顶，只看当前值与进度条）。尺寸只在本次运行内记住，不落盘。
+        # 精简模式（置顶，只看当前值与进度条）。尺寸在本次运行内记住，退出时落盘。
         self._compact = False
         self._compact_geom = None
-        # 面板按下的确认灯：闪的状态全在 Tk 线程里，handler 只留一个"按下序号"
-        self._pad_flash_seen = 0
-        self._pad_flash_until = 0.0
-        self._pad_flash_text = ""
-        self._flash_on = False
-        self._flash_targets = []     # [(widget, 原底色)]，精简态重建时一起换掉
+        self._standard_geom = None
+        # 当前**已经画出来**的是哪个模式：切模式时 `_compact` 已经翻过去了，不能拿它当"当前"
+        self._built_compact = None
         # 快捷键面板：PC 端镜像 + 编辑器。布局由这里拥有（编辑不必先启动服务器）。
         self._pad_layout = load_pad_layout()
         self._pad_win = None
@@ -1021,13 +1024,15 @@ class BridgeApp:
 
     # ── Setup View ────────────────────────────────────────────────────────
     def _build_setup(self):
+        self._remember_live_geometry()   # 重建前先记住当前位置，否则 STOP/切模式会跳回记忆中的旧位置
         self._clear()
+        self._built_compact = False
         self._mode = "setup"
         self.root.overrideredirect(False)
         self.root.title("手机推子 · Phone MIDI Bridge")
         self.root.attributes("-topmost", False)
         self.root.minsize(400, 340)
-        self._set_geometry(self._default_spec(480, 420))
+        self._set_geometry(self._standard_spec())
 
         # Header
         tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
@@ -1051,14 +1056,21 @@ class BridgeApp:
             tag = " *" if "loopmidi" in pname.lower() else ""
             self._tree.insert("", tk.END, values=(pname + tag,))
             self._port_ids.append(pid)
-        # Pre-select loopMIDI or first non-MS
-        for j, (pid, pname) in enumerate(ports):
-            if "loopmidi" in pname.lower():
-                self._tree.selection_set(self._tree.get_children()[j]); self._tree.focus(self._tree.get_children()[j]); break
-        else:
+        # 上次用过的 MIDI 输出优先（设备还在就选它）；否则 loopMIDI，再否则第一个非虚拟端口
+        remembered = self._win_prefs.get("midi_out")
+        rows = self._tree.get_children()
+        pick = None
+        if remembered:
             for j, (pid, pname) in enumerate(ports):
-                if "microsoft" not in pname.lower() and "wavetable" not in pname.lower():
-                    self._tree.selection_set(self._tree.get_children()[j]); self._tree.focus(self._tree.get_children()[j]); break
+                if pname.rstrip(" *") == remembered: pick = j; break
+        if pick is None:
+            for j, (pid, pname) in enumerate(ports):
+                if "loopmidi" in pname.lower(): pick = j; break
+        if pick is None:
+            for j, (pid, pname) in enumerate(ports):
+                if "microsoft" not in pname.lower() and "wavetable" not in pname.lower(): pick = j; break
+        if pick is not None and rows:
+            self._tree.selection_set(rows[pick]); self._tree.focus(rows[pick])
 
         # Double-click to start
         self._tree.bind("<Double-1>", lambda e: self._on_start())
@@ -1080,13 +1092,13 @@ class BridgeApp:
         pad_row = tk.Frame(self.root, bg=BG)
         pad_row.pack(fill=tk.X, padx=20, pady=(6, 0))
         tk.Label(pad_row, text="面板端口", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
-        self._pad_port_var = tk.StringVar(value=PAD_SAME_PORT)
         names = [PAD_SAME_PORT] + [n for _pid, n in ports]
+        # 上次选过的面板端口优先（用户要求）；那个端口不在了就退回"与推子相同"
+        saved_pad = self._win_prefs.get("pad_port")
+        self._pad_port_var = tk.StringVar(value=saved_pad if saved_pad in names else PAD_SAME_PORT)
         self._pad_port_box = ttk.Combobox(pad_row, textvariable=self._pad_port_var, values=names,
-                                          state="readonly", font=FONT_HINT, width=24)
+                                          state="readonly", font=FONT_CN, width=24)
         self._pad_port_box.pack(side=tk.LEFT, padx=(8, 0))
-        tk.Label(pad_row, text="（建议单开一个 loopMIDI 端口，否则音源轨会跟着弹音）",
-                 font=("Consolas", 8), bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(8, 0))
 
         # Buttons
         btn_frame = tk.Frame(self.root, bg=BG)
@@ -1104,11 +1116,13 @@ class BridgeApp:
         self._busy_lbl.pack(pady=(0, 6))
 
         # Author
-        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
+        tk.Label(self.root, text="Powered by Levi黄", font=(FONT_CJK, 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
     # ── Running View ───────────────────────────────────────────────────────
     def _build_running(self, device_name, port, protocol):
+        self._remember_live_geometry()
         self._clear()
+        self._built_compact = self._compact
         self._mode = "running"
         self._device_name, self._port, self._protocol = device_name, port, protocol
         compact = self._compact
@@ -1147,14 +1161,10 @@ class BridgeApp:
             self._bar_mid = self._bar.create_line(0, 0, 0, 0, fill=FG_DIM, width=1)
             self._bar.bind("<Configure>", lambda _e: self._draw_bar(*self._bar_args))
             self._bar_args = (None, "cc")
-            spacer = tk.Frame(body, bg=BG)
-            spacer.pack(fill=tk.BOTH, expand=True)   # 多余高度留白
-            # 按下确认灯要闪的"整窗底色"就是这几个：换底色比画边框更显眼（余光可见）
-            self._flash_targets = [(body, BG), (top, BG), (spacer, BG), (self._bar, SURFACE)]
-            self._flash_on = False
+            tk.Frame(body, bg=BG).pack(fill=tk.BOTH, expand=True)   # 多余高度留白
 
             # 没有标题栏就得自己实现拖动与拉伸
-            grip = tk.Label(body, text="◢", font=("Consolas", 9), bg=BG, fg=FG_DIM, cursor="size_nw_se")
+            grip = tk.Label(body, text="◢", font=(FONT_LATIN, 9), bg=BG, fg=FG_DIM, cursor="size_nw_se")
             grip.place(relx=1.0, rely=1.0, anchor="se")
             for widget in (body, top, self._mon_value, self._bar):
                 widget.bind("<Button-1>", self._drag_start)
@@ -1177,7 +1187,7 @@ class BridgeApp:
         self.root.minsize(400, 340)
         self.root.attributes("-topmost", False)
         # 展开态恢复上次关闭时的尺寸（没有记录过就还是原来的 480x420）
-        self._set_geometry(self._default_spec(480, 420))
+        self._set_geometry(self._standard_spec())
 
         # Header
         tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
@@ -1185,7 +1195,7 @@ class BridgeApp:
         ip = _local_ip()
         url = f"{protocol}://{ip}:{port}"
         tk.Label(self.root, text=url, font=FONT_H2, bg=BG, fg=FG).pack(pady=(0, 2))
-        tk.Label(self.root, text="手机用 Chrome 或 Safari 打开上方网址，点击启动传感器", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
+        tk.Label(self.root, text="手机浏览器打开上方网址即可（主页面选功能模块）", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
         if protocol == "http":
             tk.Label(self.root, text="⚠ 无 HTTPS：手机传感器将无法启动（见日志）", font=FONT_HINT, bg=BG, fg=AMBER).pack(pady=(0, 8))
 
@@ -1218,12 +1228,12 @@ class BridgeApp:
 
         # 精简模式：只显示当前值 + 进度条，置顶，方便放在 DAW 角落观察
         tk.Button(self.root, text="精简模式（置顶）", command=self._toggle_compact,
-                  font=FONT, bg=SURFACE, fg=FG, activebackground=BORDER,
+                  font=FONT_CN, bg=SURFACE, fg=FG, activebackground=BORDER,
                   relief=tk.FLAT, padx=14, pady=4, cursor="hand2").pack(pady=(4, 0))
 
-        # 快捷键面板：PC 端镜像手机上的按钮阵列并可编辑（改完即时同步）
+        # 快捷键面板：PC 端镜像手机上的按钮阵列并可编辑
         self._pad_btn = tk.Button(self.root, text="快捷键面板…", command=self._open_pad_editor,
-                                  font=FONT, bg=SURFACE, fg=FG, activebackground=BORDER,
+                                  font=FONT_CN, bg=SURFACE, fg=FG, activebackground=BORDER,
                                   relief=tk.FLAT, padx=14, pady=4, cursor="hand2")
         self._pad_btn.pack(pady=(6, 0))
 
@@ -1233,7 +1243,7 @@ class BridgeApp:
                                    relief=tk.FLAT, padx=32, pady=6, cursor="hand2", width=10)
         self._stop_btn.pack(pady=(10, 20))
 
-        tk.Label(self.root, text="Powered by Levi黄", font=("Consolas", 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
+        tk.Label(self.root, text="Powered by Levi黄", font=(FONT_CJK, 8), bg=BG, fg="#6A6F68", justify="right").place(relx=1.0, rely=1.0, anchor="se", x=-12, y=-8)
 
         # Start status polling
         self._status_timer = self.root.after(500, self._poll_status)
@@ -1279,18 +1289,30 @@ class BridgeApp:
         return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
 
     def _default_spec(self, w: int, h: int) -> str:
-        """标准窗口的默认位置：屏幕居中（每次打开都回到这里，不记忆）。"""
+        """屏幕居中（没有记忆位置时的兜底）。"""
         sw, sh = self._screen()
         return f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}"
 
     def _clamp_pos(self, pos, w, h):
-        """Keep the whole compact window on screen (换显示器/分辨率后不会丢)。"""
+        """Keep the whole window on screen (换显示器/分辨率后不会丢)。pos=None → 居中。"""
         sw, sh = self._screen()
         try:
             x, y = int(pos[0]), int(pos[1])
         except (TypeError, ValueError, IndexError):
             return max(0, (sw - w) // 2), max(0, (sh - h) // 2)
         return max(0, min(x, max(0, sw - w))), max(0, min(y, max(0, sh - h)))
+
+    def _standard_spec(self) -> str:
+        """标准窗口：尺寸与位置都沿用上次的。
+
+        用户 2026-09-26："记住用户上一次调整的软件 ui 大小及位置"——这**推翻了**早期那条
+        "标准窗固定 480×420 且不记忆位置"的契约（那条是八轮真机反馈换来的），所以 spec 里
+        同步改成了 D30：两个窗口都记。
+        """
+        w, h = self._fit_wh(self._standard_geom_size() or self._win_prefs.get("standard")
+                            or [480, 420], 400, 340)
+        x, y = self._clamp_pos(self._win_prefs.get("standard_pos"), w, h)
+        return f"{w}x{h}+{x}+{y}"
 
     def _compact_spec(self) -> str:
         """精简窗口：尺寸与位置都沿用上次关闭时的值（可以与标准窗口不同）。"""
@@ -1300,27 +1322,50 @@ class BridgeApp:
         x, y = self._clamp_pos(pos, w, h) if pos else self._clamp_pos(None, w, h)
         return f"{w}x{h}+{x}+{y}"
 
+    def _standard_geom_size(self):
+        m = re.match(r"(\d+)x(\d+)", getattr(self, "_standard_geom", "") or "")
+        return [int(m.group(1)), int(m.group(2))] if m else None
+
     def _compact_geom_size(self):
         m = re.match(r"(\d+)x(\d+)", getattr(self, "_compact_geom", "") or "")
         return [int(m.group(1)), int(m.group(2))] if m else None
 
-    def _capture_window(self):
-        """Record the compact window's size and position on the way out.
+    def _remember_live_geometry(self):
+        """重建视图**之前**把当前窗口的尺寸与位置记下来。
 
-        The standard window is deliberately *not* recorded: it always opens at its default
-        position. Called before any teardown, because stopping the server rebuilds the setup
-        view and would throw the compact geometry away.
+        两个坑都在这里踩过：
+        · 不做这一步：拖动窗口后按 STOP 或切换模式，窗口会跳回上次记忆的位置（重建又按记忆值摆一次）。
+        · 必须记在**当前显示的那个模式**的键上（`_built_compact`），不能记在 `_compact` 上——
+          切模式时 `_compact` 已经翻过去了，把标准窗的尺寸写进精简窗就是错的。
+        · 未映射时 Tk 的 `geometry()` 给的是**被 minsize 钳过**的值（测试里量到 420x340），
+          拿它当记忆值会形成"越记越小"的回授。所以一律用我们**请求过的** `_win_size/_win_pos`
+          （`_set_geometry` 记尺寸与位置、`_drag_move` 也把位置记进去）。
         """
         try:
-            if self._compact:
-                w, h = self.root.winfo_width(), self.root.winfo_height()
-                if w > 1 and h > 1:                   # 1x1 = 未映射
-                    self._win_prefs["compact"] = [w, h]
-                    self._win_prefs["compact_pos"] = [self.root.winfo_x(), self.root.winfo_y()]
-            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", getattr(self, "_compact_geom", "") or "")
+            # 还没画过任何视图 = 没有"当前窗口"可记。少了这一条，启动时的第一次重建会把
+            # 刚从盘里读出来的记忆值覆盖成 __init__ 里的默认 480x420，记忆就永远不生效。
+            if self._built_compact is None: return
+            w, h = self._win_size
+            x, y = self._win_pos
+            geom = "%dx%d+%d+%d" % (w, h, x, y)
+            key = "compact" if self._built_compact else "standard"
+            if self._built_compact: self._compact_geom = geom
+            else: self._standard_geom = geom
+            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom)
             if m:
-                self._win_prefs["compact"] = [int(m.group(1)), int(m.group(2))]
-                self._win_prefs["compact_pos"] = [int(m.group(3)), int(m.group(4))]
+                self._win_prefs[key] = [int(m.group(1)), int(m.group(2))]
+                self._win_prefs[key + "_pos"] = [int(m.group(3)), int(m.group(4))]
+        except Exception as e:
+            log.warning("记录当前窗口几何失败：%s", e)
+
+    def _capture_window(self):
+        """Record both windows' size and position on the way out.
+
+        Called before any teardown, because stopping the server rebuilds the setup view and the
+        live geometry would be gone by then.
+        """
+        try:
+            self._remember_live_geometry()
             save_window_prefs(self._win_prefs)
         except Exception as e:
             log.warning("记录窗口位置失败：%s", e)
@@ -1341,7 +1386,9 @@ class BridgeApp:
     def _drag_move(self, event):
         if not getattr(self, "_drag_origin", None): return
         dx, dy = self._drag_origin
-        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+        x, y = event.x_root - dx, event.y_root - dy
+        self.root.geometry(f"+{x}+{y}")
+        self._win_pos = (x, y)   # 拖动也算"我们请求过的位置"：退出时要靠它记下来
 
     def _resize_start(self, event):
         self._resize_origin = (event.x_root, event.y_root,
@@ -1453,9 +1500,6 @@ class BridgeApp:
         pages = self._pad_pages()
 
         tk.Label(self._pad_body, text="快捷键面板", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(14, 2))
-        tk.Label(self._pad_body,
-                 text="改完即时同步到手机。音符编号只在 PC 显示（手机上不显示，避免干扰辨认）",
-                 font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 8))
 
         # 页签：固定 6 页（D18），所以没有"加页/删页"，标签用"序号 + 标题前几个字"
         tabs = tk.Frame(self._pad_body, bg=BG)
@@ -1471,7 +1515,7 @@ class BridgeApp:
         row.pack(fill=tk.X, padx=16, pady=(10, 0))
         tk.Label(row, text="页标题", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
         self._pad_title_var = tk.StringVar(value=self._pad_page_data().get("title") or "")
-        title_entry = tk.Entry(row, textvariable=self._pad_title_var, font=FONT, bg=SURFACE, fg=FG,
+        title_entry = tk.Entry(row, textvariable=self._pad_title_var, font=FONT_CN, bg=SURFACE, fg=FG,
                                insertbackground=FG, relief=tk.FLAT)
         title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
         title_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_title())
@@ -1486,10 +1530,10 @@ class BridgeApp:
             frame = tk.Frame(grid, bg=PAD_COLORS[0], highlightthickness=2,
                              highlightbackground=BG, cursor="hand2")
             frame.grid(row=slot // PAD_COLS, column=slot % PAD_COLS, sticky="nsew", padx=3, pady=3)
-            label = tk.Label(frame, text="", font=FONT_BOLD, bg=PAD_COLORS[0], fg="#FFFFFF",
+            label = tk.Label(frame, text="", font=FONT_CN_BOLD, bg=PAD_COLORS[0], fg="#FFFFFF",
                              wraplength=110, justify="center")
             label.pack(fill=tk.BOTH, expand=True, padx=6, pady=(8, 0))
-            note = tk.Label(frame, text="", font=("Consolas", 8), bg=PAD_COLORS[0], fg="#C8CDD6")
+            note = tk.Label(frame, text="", font=(FONT_LATIN, 8), bg=PAD_COLORS[0], fg="#C8CDD6")
             note.pack(side=tk.BOTTOM, anchor="e", padx=6, pady=(0, 4))
             for w in (frame, label, note):
                 self._pad_slot_at[w] = slot
@@ -1498,29 +1542,15 @@ class BridgeApp:
                 w.bind("<ButtonRelease-1>", self._pad_drag_end)
             self._pad_cells.append({"frame": frame, "label": label, "note": note})
 
-        # 选中格子：文字 + 音符 + 固定调色板（不用系统取色器：模态弹窗，而且容易选到看不清的颜色）
+        # 选中格子：文字 + 颜色（音符不再自由输入，恒为 36 + 编号，见 D31）
         edit = tk.Frame(self._pad_body, bg=BG)
         edit.pack(fill=tk.X, padx=16)
         tk.Label(edit, text="按钮文字", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
         self._pad_text_var = tk.StringVar()
-        self._pad_entry = tk.Entry(edit, textvariable=self._pad_text_var, font=FONT, bg=SURFACE,
+        self._pad_entry = tk.Entry(edit, textvariable=self._pad_text_var, font=FONT_CN, bg=SURFACE,
                                    fg=FG, insertbackground=FG, relief=tk.FLAT, state=tk.DISABLED)
         self._pad_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
         self._pad_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_text())
-
-        # 音符：每格自己的 MIDI 音符（0–127）。与格子位置**解绑**，所以拖动换位不会影响它，
-        # 也因此可以把它挪出音源的键区来避开"音源跟着弹音"。
-        note_row = tk.Frame(self._pad_body, bg=BG)
-        note_row.pack(fill=tk.X, padx=16, pady=(6, 0))
-        tk.Label(note_row, text="音符", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
-        self._pad_note_var = tk.StringVar()
-        self._pad_note_entry = tk.Entry(note_row, textvariable=self._pad_note_var, font=FONT,
-                                        bg=SURFACE, fg=FG, insertbackground=FG, relief=tk.FLAT,
-                                        width=5, justify=tk.CENTER, state=tk.DISABLED)
-        self._pad_note_entry.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
-        self._pad_note_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_note())
-        tk.Label(note_row, text="0–127（Nuendo 侧要在映射助手里学这一条；改完需要重学一次）",
-                 font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(10, 0))
 
         # 颜色：任意 hex（取色器或手输）+ 8 个预设色块（D20：不再限死调色板）
         pal = tk.Frame(self._pad_body, bg=BG)
@@ -1528,7 +1558,7 @@ class BridgeApp:
         tk.Label(pal, text="颜色", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(0, 8))
         self._pad_color_var = tk.StringVar()
         self._pad_color_entry = tk.Entry(pal, textvariable=self._pad_color_var,
-                                         font=("Consolas", 10), bg=SURFACE, fg=FG,
+                                         font=(FONT_LATIN, 10), bg=SURFACE, fg=FG,
                                          insertbackground=FG, relief=tk.FLAT, width=9,
                                          justify=tk.CENTER, state=tk.DISABLED)
         self._pad_color_entry.pack(side=tk.LEFT, ipady=3)
@@ -1584,11 +1614,10 @@ class BridgeApp:
                                          else ("#3C3C43" if light else "#C8CDD6"))
 
     def _pad_redraw(self):
-        """重画格子 + 同步两个输入框的显示与可用状态。"""
+        """重画格子 + 同步输入框的显示与可用状态。"""
         if self._pad_win is None: return
         self._pad_redraw_cells()
         entries = ((self._pad_entry, self._pad_text_var),
-                   (self._pad_note_entry, self._pad_note_var),
                    (self._pad_color_entry, self._pad_color_var))
         if self._pad_sel is None:
             for entry, var in entries:
@@ -1597,9 +1626,6 @@ class BridgeApp:
             cfg = self._pad_cell(self._pad_sel) or {}
             self._pad_entry.configure(state=tk.NORMAL)
             self._pad_text_var.set(cfg.get("text") or "")
-            self._pad_note_entry.configure(state=tk.NORMAL)
-            self._pad_note_var.set(str(pad_note_in_layout(
-                self._pad_layout, self._pad_page * PAD_SLOTS + self._pad_sel)))
             self._pad_color_entry.configure(state=tk.NORMAL)
             self._pad_color_var.set(pad_color_norm(cfg.get("color")))
 
@@ -1667,24 +1693,12 @@ class BridgeApp:
         self._pad_commit_soon()
 
     def _pad_edit_note(self):
-        """改音符：非法输入直接忽略（不要写进模型），合法则落盘并广播。
+        """**已废弃**：音符不再自由输入（用户 2026-09-26："删除音符自由输入的功能，仅使用软件提供的默认值"）。
 
-        注意这里**不重画输入框**，否则正在输入的后一位数字会被覆盖。
+        留着这个方法只是为了让旧调用点不会 AttributeError；音符现在是**位置派生**的
+        （`36 + 触发编号`，见 `_pad_clean_cell`），编辑器里的 `N36` 角标只是显示这个结果。
         """
-        if self._pad_sel is None: return
-        cell = self._pad_cell(self._pad_sel)
-        if cell is None: return
-        raw = self._pad_note_var.get().strip()
-        try: note = int(raw)
-        except (TypeError, ValueError):
-            self._pad_status("音符要是 0–127 的整数"); return
-        if not pad_note_valid(note):
-            self._pad_status("音符要在 0–127 之间"); return
-        if note == cell.get("note"): return
-        cell["note"] = note
-        self._pad_status("")
-        self._pad_redraw_cells()                      # 重复音符的提示跟着更新
-        self._pad_commit_soon()
+        self._pad_status("音符由软件按位置固定给出（第几格就是第几个），不支持手改")
 
     def _pad_edit_title(self):
         page = self._pad_page_data()
@@ -1770,67 +1784,20 @@ class BridgeApp:
             cc = self._handler.last_cc_output
             n = self._handler.client_count
             connected = n > 0
-            self._pick_up_pad_flash()
-            flashing = self._pad_flash_until > time.monotonic()
             if self._compact:
-                if flashing:
-                    self._pad_flash_show()
-                else:
-                    self._pad_flash_hide()
-                    norm, kind = self._bar_norm(cc) if connected else (None, "cc")
-                    self._bar_args = (norm, kind)
-                    self._mon_value.config(text=self._value_text(cc, connected))
-                    self._draw_bar(norm, kind)
+                norm, kind = self._bar_norm(cc) if connected else (None, "cc")
+                self._bar_args = (norm, kind)
+                self._mon_value.config(text=self._value_text(cc, connected))
+                self._draw_bar(norm, kind)
             else:
                 self._status_clients.config(text=f"clients: {n}")
-                if flashing:
-                    self._status_cc.config(text=self._pad_flash_text)
-                elif cc:
+                if cc:
                     o = cc[0]; self._status_cc.config(text=f"CC{o['cc']} Ch{o['channel']+1} = {o['value']}")
                     # Pulse dot
                     hue = GREEN if o['value'] > 0 else FG_DIM
                     self._indicator.itemconfig(self._dot, fill=hue)
                 else: self._status_cc.config(text="cc: --")
         self._status_timer = self.root.after(50 if self._compact else 500, self._poll_status)
-
-    # ── 面板按下的确认灯（PC 端） ─────────────────────────────────────────────
-    # 为什么在 PC 上做：手机端在鸿蒙上拿不到马达（spec D25），而用户操作时人就在电脑前，
-    # 余光扫到的置顶小窗比手机振一下更可靠——而且**能看出按的是哪一个按钮**。
-    # 它证明的是"手机 → Bridge → MIDI 已发出"，**不是**"宏已经在 DAW 里执行了"（那要状态回读，D13）。
-
-    def _pick_up_pad_flash(self):
-        """Bridge（asyncio 线程）把每次按下记在 handler.pad_flash 上，这里用同一个轮询捡起来。
-
-        跨线程只做"读一个不可变元组 + 比序号"，与 last_cc_output 同一套路：不碰 Tk 对象。
-        """
-        ev = getattr(self._handler, "pad_flash", None)
-        if not ev: return
-        seq, tid, note, text = ev
-        if seq <= self._pad_flash_seen: return
-        self._pad_flash_seen = seq
-        name = text or ("格 %d" % (int(tid) % PAD_SLOTS + 1))
-        self._pad_flash_text = "▶ %s   N%d" % (name, note)
-        window = PAD_FLASH_MS if self._compact else PAD_FLASH_TEXT_MS
-        self._pad_flash_until = time.monotonic() + window / 1000.0
-
-    def _pad_flash_show(self):
-        """整窗闪一下（不是画个边框：余光里看得见的是**大面积的颜色变化**）。"""
-        if not self._flash_on:
-            self._flash_on = True
-            for widget, _bg in self._flash_targets: widget.config(bg=GREEN)
-            back = getattr(self, "_mon_back", None)
-            if back is not None: back.config(bg=GREEN, fg=BG, highlightbackground=GREEN)
-            if getattr(self, "_mon_value", None) is not None: self._mon_value.config(fg=BG)
-        if getattr(self, "_mon_value", None) is not None:
-            self._mon_value.config(text=self._pad_flash_text)
-
-    def _pad_flash_hide(self):
-        if not self._flash_on: return
-        self._flash_on = False
-        for widget, bg in self._flash_targets: widget.config(bg=bg)
-        back = getattr(self, "_mon_back", None)
-        if back is not None: back.config(bg=SURFACE, fg=FG_DIM, highlightbackground=BORDER)
-        if getattr(self, "_mon_value", None) is not None: self._mon_value.config(fg=FG)
 
     def _show_error(self, msg: str):
         """Say it in the window: the packaged exe has no console, so a startup failure that
@@ -1839,9 +1806,9 @@ class BridgeApp:
         self._clear()
         self._mode = "setup"
         tk.Label(self.root, text="启动失败", font=FONT_H1, bg=BG, fg=RED).pack(pady=(24, 8))
-        tk.Label(self.root, text=msg, font=FONT, bg=BG, fg=FG, wraplength=420,
+        tk.Label(self.root, text=msg, font=FONT_CN, bg=BG, fg=FG, wraplength=420,
                  justify="left").pack(padx=24)
-        tk.Button(self.root, text="返回", command=self._build_setup, font=FONT_BOLD, bg=SURFACE,
+        tk.Button(self.root, text="返回", command=self._build_setup, font=FONT_CN_BOLD, bg=SURFACE,
                   fg=FG, relief=tk.FLAT, padx=24, pady=6, cursor="hand2").pack(pady=20)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
@@ -1850,7 +1817,7 @@ class BridgeApp:
         for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
                      "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
                      "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn",
-                     "_status_pad", "_pad_port_var", "_pad_port_box", "_flash_targets"):
+                     "_status_pad", "_pad_port_var", "_pad_port_box"):
             if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
 
@@ -1871,6 +1838,10 @@ class BridgeApp:
         device_id = self._port_ids[idx]
         device_name = self._tree.item(sel[0], "values")[0]
         port = int(self._port_var.get() or "8765")
+        # 记住这次选的 MIDI 输出与面板端口（用户要求：下次打开直接回到上次的选择）
+        self._win_prefs["midi_out"] = device_name.rstrip(" *")
+        self._win_prefs["pad_port"] = self._pad_port_var.get()
+        save_window_prefs(self._win_prefs)
         self._start_server(device_id, device_name, port, pad_name=self._pad_selection())
 
     def _ssl_for(self, base_dir):

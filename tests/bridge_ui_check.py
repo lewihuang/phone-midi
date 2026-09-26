@@ -8,7 +8,8 @@
 以及启动失败（端口被占用）时窗口必须报错，而不是假装在运行——那是"手机连上了但 PC
 没有 client"的真正原因。
 """
-import os, re, sys, time, tkinter as tk
+import os, re, sys, time, tempfile, tkinter as tk
+from pathlib import Path
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -18,6 +19,11 @@ except Exception:
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bridge"))
 import server
+
+# 窗口/端口的记忆写到 %APPDATA%，**测试必须改写到一个临时文件**：否则每跑一次测试
+# 就会把用户真实的窗口尺寸、位置、上次选的端口覆盖掉（这事真发生过）。
+_tmpdir = tempfile.mkdtemp(prefix="ui-check-")
+server.WINDOW_PREFS = Path(_tmpdir) / "window.json"
 
 fails = []
 total = 0
@@ -63,7 +69,6 @@ class FakeHandler:
     def __init__(self):
         self.last_cc_output = cc_out
         self.client_count = 1
-        self.pad_flash = None
 
 try:
     app.root.withdraw()
@@ -144,39 +149,6 @@ try:
     check("精简态显示当前 CC 值", app._mon_value.cget("text") == "CC1 64",
           app._mon_value.cget("text"))
 
-    # ── 面板按下的确认灯（PC 端闪一下） ─────────────────────────────────────
-    # 手机端在鸿蒙上拿不到马达（spec D25），改成在人就在旁边的 PC 上闪：整窗变绿 200ms，
-    # 并把"按了哪一个"写出来。Bridge（asyncio 线程）只记一个时间戳元组，这里轮询捡走。
-    app._handler.pad_flash = (1, 8, 39, "停止")
-    app._poll_status()
-    lit = [w.cget("bg") for w, _bg in app._flash_targets]
-    check("面板触发：精简窗整窗闪 + 显示是哪一个按钮",
-          app._mon_value.cget("text") == "▶ 停止   N39" and lit and all(b == server.GREEN for b in lit)
-          and app._mon_value.cget("fg") == server.BG,
-          f"{app._mon_value.cget('text')!r} bg={lit[:1]}")
-    check("闪的底色覆盖整窗（body/top/留白/进度条都在名单里）",
-          len(app._flash_targets) == 4, f"{len(app._flash_targets)} 个部件")
-    app._poll_status()      # 同一事件不重复捡（时间戳不会前进）
-    check("同一个触发只闪一次（按按下序号去重）",
-          app._mon_value.cget("text") == "▶ 停止   N39", "轮询重复跑也还是那一次")
-
-    app._pad_flash_until = 0        # 200ms 到了
-    app._handler.last_cc_output = cc_out
-    app._poll_status()
-    restored = [w.cget("bg") for w, _bg in app._flash_targets]
-    check("闪完自动复原：底色、字色、值都回到原样",
-          restored == [server.BG, server.BG, server.BG, server.SURFACE]
-          and app._mon_value.cget("fg") == server.FG
-          and app._mon_value.cget("text") == "CC1 64",
-          f"bg={restored} text={app._mon_value.cget('text')!r}")
-
-    app._handler.pad_flash = (2, 0, 36, "")     # 没写文字的格子
-    app._poll_status()
-    check("没写文字的格子退回“格 N”，不会显示成空",
-          app._mon_value.cget("text") == "▶ 格 1   N36", app._mon_value.cget("text"))
-    app._pad_flash_until = 0
-    app._poll_status()
-
     # 无标题栏 ⇒ 拖动与拉伸必须自己实现，而且下限要守住
     class _Ev:
         def __init__(self, x, y): self.x_root, self.y_root = x, y
@@ -210,12 +182,25 @@ try:
           and not app.root.overrideredirect() and app.root.minsize() == (400, 340),
           f"requested={app._win_size} min={app.root.minsize()} overrideredirect={app.root.overrideredirect()}")
 
-    # ── 窗口几何：标准窗每次回到默认位置；精简窗记住尺寸+位置 ────────────────
-    server.save_window_prefs({"compact": [520, 140], "compact_pos": [1234, 567], "junk": "x"})
+    # ── 窗口几何与端口记忆 ─────────────────────────────────────────────────
+    # 契约在 2026-09-26 变了（spec D30）：用户要求"记住用户上一次调整的软件 ui 大小及位置"，
+    # 所以**两个窗口都记**尺寸与位置（旧契约是"标准窗固定 480×420 且不记忆位置"）。
+    GOOD_PREFS = {"compact": [520, 140], "compact_pos": [1234, 567],
+                  "standard": [640, 500], "standard_pos": [200, 120],
+                  "midi_out": "PhonePad", "pad_port": "loopMIDI 2", "junk": "x"}
+    server.save_window_prefs(GOOD_PREFS)
     got = server.load_window_prefs()
-    check("几何记录：写入后能读回、脏字段被忽略",
+    check("几何记录：尺寸/位置/端口都能读回、脏字段被忽略",
           got.get("compact") == [520, 140] and got.get("compact_pos") == [1234, 567]
+          and got.get("standard") == [640, 500] and got.get("standard_pos") == [200, 120]
+          and got.get("midi_out") == "PhonePad" and got.get("pad_port") == "loopMIDI 2"
           and "junk" not in got, f"{got}")
+    check("端口记录：空串/非字符串/坏几何一律不认（设备没了就得退回默认）",
+          (lambda: (server.save_window_prefs({"midi_out": "  ", "pad_port": 7,
+                                              "standard": [1, 2, 3]}),
+                    server.load_window_prefs() == {},
+                    server.save_window_prefs(GOOD_PREFS))[1])(),
+          "空串与坏类型都被 load_window_prefs 丢掉（断言完把好数据写回去）")
     check("几何记录：超出屏幕会被钳制",
           app._fit([99999, 99999], 420, 84).split("x")[0] == str(app.root.winfo_screenwidth()),
           f"{app._fit([99999, 99999], 420, 84)}（屏幕 {app.root.winfo_screenwidth()}）")
@@ -224,14 +209,27 @@ try:
 
     sw, sh = app.root.winfo_screenwidth(), app.root.winfo_screenheight()
     app._compact = False
+    app._standard_geom = None
+    app._built_compact = None       # 模拟"刚启动、还没画过任何视图"：这时必须用盘里的记忆值
+    app._win_prefs = server.load_window_prefs()
     app._build_running("loopMIDI", 8765, "https")
     app.root.update_idletasks()
-    check("标准窗：每次都是 480x420 + 屏幕居中（不记忆位置）",
+    check("标准窗：沿用上次的尺寸与位置（D30 起不再固定居中）",
+          app._win_size == (640, 500) and app._win_pos == (200, 120),
+          f"{app._win_size} at {app._win_pos}")
+
+    app._win_prefs = {}                     # 没有任何记录时（= 第一次运行）
+    app._standard_geom = None
+    app._built_compact = None
+    app._build_running("loopMIDI", 8765, "https")
+    app.root.update_idletasks()
+    check("标准窗：第一次打开仍是 480x420 + 居中",
           app._win_size == (480, 420) and app._win_pos == ((sw - 480) // 2, (sh - 420) // 2),
           f"{app._win_size} at {app._win_pos}")
 
     app._compact = True
     app._compact_geom = None
+    app._built_compact = None
     app._win_prefs = server.load_window_prefs()
     app._build_running("loopMIDI", 8765, "https")
     app.root.update_idletasks()
@@ -239,32 +237,41 @@ try:
           app._win_size == (520, 140) and app._win_pos == (1234, 567),
           f"{app._win_size} at {app._win_pos}")
 
-    # 关闭时抓取（窗口未映射时 winfo_* 返回 1，这里打桩）
+    # 关闭时抓取并落盘（窗口未映射时 geometry() 给的就是"请求值"，所以直接用 _set_geometry 摆好）
     app._win_prefs = {}
-    app.root.winfo_width = lambda: 550
-    app.root.winfo_height = lambda: 130
-    app.root.winfo_x = lambda: 800
-    app.root.winfo_y = lambda: 200
+    app._set_geometry("550x130+800+200")
     app._capture_window()
-    check("精简窗：关闭时抓到尺寸与位置并落盘",
+    check("退出时抓取当前窗口的尺寸与位置并落盘",
           server.load_window_prefs().get("compact") == [550, 130]
           and server.load_window_prefs().get("compact_pos") == [800, 200],
           f"{server.load_window_prefs()}")
 
     app._win_prefs = {}
+    app._compact = True
+    app._compact_geom = None
+    app._built_compact = True                    # 现在显示的是精简窗
+    app._set_geometry("500x120+321+654")
+    app._capture_window()
     app._compact = False
-    app._compact_geom = "500x120+321+654"        # 离开精简态时记下的
+    app._built_compact = False                   # 现在显示的是标准窗
+    app._set_geometry("620x480+60+40")
     app._mode = "running"
     app._capture_window()
-    check("从标准窗退出：仍保留上一次精简窗的几何，且不写标准窗的位置",
-          server.load_window_prefs() == {"compact": [500, 120], "compact_pos": [321, 654]},
+    check("两个窗口各记各的：退出时精简窗的旧记录留着，标准窗也写上",
+          server.load_window_prefs().get("compact") == [500, 120]
+          and server.load_window_prefs().get("compact_pos") == [321, 654]
+          and server.load_window_prefs().get("standard") == [620, 480]
+          and server.load_window_prefs().get("standard_pos") == [60, 40],
           f"{server.load_window_prefs()}")
 
     app._win_prefs = {}
-    app._compact_geom = None
+    app._built_compact = False
+    app._set_geometry("480x420+10+20")
     app._mode = "setup"
     app._capture_window()
-    check("从未进过精简态：不写任何记录", server.load_window_prefs() == {},
+    check("在设置页退出也记标准窗（下次打开回到这里）",
+          server.load_window_prefs().get("standard") == [480, 420]
+          and server.load_window_prefs().get("standard_pos") == [10, 20],
           f"{server.load_window_prefs()}")
 
     # 启动失败必须可见

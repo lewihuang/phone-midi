@@ -174,44 +174,48 @@ check("落盘后能读回，且读回时已被清洗（页数补齐、格子补�
       and len(server.load_pad_layout()["pages"][0]["cells"]) == 8,
       f"{server.PAD_PREFS.name}")
 
-# ── 2b. 音符：默认值、可改、与格子位置解绑（T2） ───────────────────────────────
+# ── 2b. 音符：**由位置派生，不接受手改**（D31，2026-09-26 删掉自由输入） ─────────
 check("形状是 2 列 × 4 行",
       (server.PAD_COLS, server.PAD_ROWS, server.PAD_SLOTS) == (2, 4, 8),
       f"{server.PAD_COLS} 列 × {server.PAD_ROWS} 行 = {server.PAD_SLOTS} 格")
 
 note_default = server.pad_clean_layout({"pages": [{"cells": []}, {"cells": []}]})
-check("缺 note 时按位置补默认值：第 1 页 36 起、第 2 页 44 起",
+check("音符按位置给：第 1 页 36 起、第 2 页 44 起",
       [c["note"] for c in note_default["pages"][0]["cells"]] == list(range(36, 44))
       and [c["note"] for c in note_default["pages"][1]["cells"]] == list(range(44, 52)),
       f"p1 首格 {note_default['pages'][0]['cells'][0]['note']}，p2 首格 {note_default['pages'][1]['cells'][0]['note']}")
 
+# 用户："删除音符自由输入的功能，仅使用软件提供的默认值" —— 所以配置里存的音符一律被重算，
+# 手改过的旧配置（以及越界/非整数/布尔）全都回到 36+编号。
 note_kept = server.pad_clean_layout({"pages": [{"cells": [
     {"note": 100}, {"note": 200}, {"note": "x"}, {"note": True}, {"note": -1},
 ]}]})["pages"][0]["cells"]
-check("自己设的音符被保留，越界/非整数/布尔一律退回默认",
-      [c["note"] for c in note_kept[:5]] == [100, 37, 38, 39, 40],
+check("旧配置里手改过的音符被按位置重算（不再保留 100/200 这些）",
+      [c["note"] for c in note_kept[:5]] == [36, 37, 38, 39, 40],
       f"{[c['note'] for c in note_kept[:5]]}")
 
 layout_with_note = server.pad_clean_layout({"pages": [{"cells": [{"note": 50}]}]})
-check("按布局查音符；查不到或用例非法时退回 36+编号",
-      server.pad_note_in_layout(layout_with_note, 0) == 50
+check("查音符也是按位置算；布局缺失/非法时同样退回 36+编号",
+      server.pad_note_in_layout(layout_with_note, 0) == 36
       and server.pad_note_in_layout(layout_with_note, 1) == 37
-      and server.pad_note_in_layout({"pages": []}, 0) == 36,
-      "id 0 -> 50（布局里写的），id 1 -> 37（默认）")
+      and server.pad_note_in_layout({"pages": []}, 0) == 36
+      and server.pad_note_in_layout(None, 5) == 41,
+      "布局里写的 50 不参与；id 5 -> 41")
 
 dupes = server.pad_duplicate_notes(server.pad_clean_layout({"pages": [
     {"cells": [{"note": 60}, {"note": 60}]},
     {"cells": [{"note": 60}]},
 ]}))
-# 断言性质，不手算具体默认值：总数 = 6 页 × 8 格；出现过重复；不同音符数少于总格数。
+# 音符既然是位置派生的，就**不可能重复**：48 格 = 48 个各不相同的音符，重复提示永远不触发。
 total_cells = server.PAD_SLOTS * server.PAD_PAGES
-check("重复音符能被数出来（跨页也算，编辑器据此提示）",
-      dupes.get(60) >= 3 and sum(dupes.values()) == total_cells and len(dupes) < total_cells,
-      f"60 至少出现 {dupes.get(60)} 次；共 {sum(dupes.values())} 格 / {len(dupes)} 个不同音符")
+check("音符不可能重复（位置派生 = 48 格 48 个不同音符）",
+      sum(dupes.values()) == total_cells and len(dupes) == total_cells
+      and all(n == 1 for n in dupes.values()),
+      f"共 {sum(dupes.values())} 格 / {len(dupes)} 个不同音符")
 
 swap_layout = server.pad_clean_layout({"pages": [{"cells": [
-    {"text": "甲", "color": server.PAD_COLORS[2], "note": 99},
-    {"text": "乙", "color": server.PAD_COLORS[4], "note": 12},
+    {"text": "甲", "color": server.PAD_COLORS[2]},
+    {"text": "乙", "color": server.PAD_COLORS[4]},
 ]}]})
 before = [dict(c) for c in swap_layout["pages"][0]["cells"][:2]]
 moved = server.pad_swap_cells(swap_layout, 0, 0, 1)
@@ -248,37 +252,21 @@ asyncio.run(h._on_trigger({"kind": "trigger", "id": 9999, "phase": "down"}))
 asyncio.run(h._on_trigger({"kind": "trigger", "id": None, "phase": "down"}))
 check("越界编号什么都不发", h.midi.notes == [], f"{h.midi.notes}")
 
-# ── 3b. PC 端确认灯：Bridge 记下"按了哪一个"，由 Tk 轮询捡走 ────────────────────
-# 手机端在鸿蒙上拿不到马达（spec D25），改成在人就在旁边的 PC 置顶小窗上闪一下；
-# 所以 Bridge 必须把"按下"这件事记下来（含布局里的按钮文字），而"抬起"不记。
-reset_pad_file()
-flash, _ = handler_with_midi()
-flash.set_pad_layout({"pages": [{"cells": [{"text": "停止"}, {"text": ""}]}]})
-asyncio.run(flash._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
-first = flash.pad_flash
-check("按下时记一条确认灯素材（序号 / 编号 / 音符 / 按钮文字）",
-      first is not None and first[1] == 0 and first[2] == 36 and first[3] == "停止",
-      f"{first}")
-asyncio.run(flash._on_trigger({"kind": "trigger", "id": 0, "phase": "up"}))
-check("抬起不改确认灯（只有按下才需要确认）", flash.pad_flash == first, f"{flash.pad_flash}")
-asyncio.run(flash._on_trigger({"kind": "trigger", "id": 1, "phase": "down"}))
-check("序号递增：两次按下一定区分得开（时间戳在同一 tick 内会相等）",
-      flash.pad_flash[0] == first[0] + 1 and flash.pad_flash[3] == "",
-      f"seq {first[0]} -> {flash.pad_flash[0]}（第二格没写文字 -> 空串，Tk 侧退回“格 N”）")
-
-# ── 3c. 触发发的音符来自布局（T2 解绑之后的行为） ──────────────────────────────
+# ── 3c. 触发发的音符 = 36 + 触发编号（位置派生，D31 之后音符不可手改） ─────────
 custom, _ = handler_with_midi()
 custom.set_pad_layout({"pages": [{"cells": [{"note": 60}, {"note": 61}]}]})
 asyncio.run(custom._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
-check("按布局发音符：第 1 格改成 60 就发 60（不再是 36）",
-      custom.midi.notes == [(60, 15, 127)], f"{custom.midi.notes}")
+check("音符与位置绑定：不管旧配置里写的是什么，第 1 格发 36",
+      custom.midi.notes == [(36, 15, 127)], f"{custom.midi.notes}")
 asyncio.run(custom._on_trigger({"kind": "trigger", "id": 1, "phase": "down"}))
-check("同一页每一格用自己的音符", custom.midi.notes[-1] == (61, 15, 127), f"{custom.midi.notes[-1]}")
-# 按住期间把这一格的编号改掉：松开必须关掉**当初发出去的那一条**，否则 DAW 里会留一个挂着的 Note
-custom.set_pad_layout({"pages": [{"cells": [{"note": 70}, {"note": 61}]}]})
+check("同一页按位置依次 36 / 37", custom.midi.notes[-1] == (37, 15, 127), f"{custom.midi.notes[-1]}")
+# 按住期间把两格**交换**（拖动）：松开必须关掉**当初发出去的那一条**，否则 DAW 里会留一个挂着的 Note。
+# 音符现在跟着位置走，所以交换之后 0 号格"看起来"该发 37，但松开要关的是 36。
+custom.set_pad_layout({"pages": [{"cells": [{"text": "甲"}, {"text": "乙"}]}]})
+custom.pad_layout = server.pad_swap_cells(custom.pad_layout, 0, 0, 1)
 asyncio.run(custom._on_trigger({"kind": "trigger", "id": 0, "phase": "up"}))
-check("按住期间改了编号，松开仍关掉当初那个音符（不留悬挂）",
-      custom.midi.notes[-1] == (60, 15, 0) and 0 not in custom._pad_held,
+check("按住期间交换了格子，松开仍关掉当初那个音符（不留悬挂）",
+      custom.midi.notes[-1] == (36, 15, 0) and 0 not in custom._pad_held,
       f"最后一条 {custom.midi.notes[-1]}，0 号仍按着：{0 in custom._pad_held}")
 custom.release_all_triggers()
 asyncio.run(custom._on_trigger({"kind": "trigger", "id": 1, "phase": "up"}))
@@ -438,24 +426,21 @@ try:
                     4: (2, 0), 5: (2, 1), 6: (3, 0), 7: (3, 1)},
           f"{shape}")
 
-    # 音符可编辑：模型 / 格子标签 / pad.json 三处一致
+    # 音符**不可手改**（D31）：编辑器里没有那个输入框，格子标签显示的 N 号由位置派生；
+    # 就算硬塞一个 note 进模型，落盘时也会被按位置重算。
     app._pad_select(1)
-    app._pad_note_var.set("77")
-    app._pad_edit_note()
+    check("编辑器里没有音符输入框（音符不再自由输入）",
+          not hasattr(app, "_pad_note_entry") and not hasattr(app, "_pad_note_var"),
+          "音符 / 输入框都不在")
+    check("格子右下角的 N 号是位置派生的（第 2 格 = N37）",
+          app._pad_cells[1]["note"].cget("text") == "N37",
+          app._pad_cells[1]["note"].cget("text"))
+    app._pad_layout["pages"][0]["cells"][1]["note"] = 77      # 手改模型（模拟旧配置/外来的值）
     app._pad_commit()
     saved_note = json.load(open(server.PAD_PREFS, encoding="utf-8"))
-    check("改音符：模型 / 格子标签 / pad.json 三处一致",
-          app._pad_layout["pages"][0]["cells"][1]["note"] == 77
-          and app._pad_cells[1]["note"].cget("text") == "N77"
-          and saved_note["pages"][0]["cells"][1]["note"] == 77,
-          f"{app._pad_cells[1]['note'].cget('text')}")
-    app._pad_note_var.set("999")
-    app._pad_edit_note()
-    check("非法音符被拒绝、给出提示，且不写进模型",
-          app._pad_layout["pages"][0]["cells"][1]["note"] == 77
-          and "0–127" in app._pad_status_lbl.cget("text"),
-          f"提示：{app._pad_status_lbl.cget('text')}")
-    app._pad_note_var.set("77")
+    check("手塞进去的音符落盘时被按位置重算回 37",
+          saved_note["pages"][0]["cells"][1]["note"] == 37,
+          f"pad.json 里现在是 {saved_note['pages'][0]['cells'][1]['note']}")
 
     # 任意颜色：手输 hex 与预设色块走同一条路（D20）
     app._pad_color_var.set("#12ab34")
@@ -487,10 +472,11 @@ try:
           f"落点 slot={app._pad_drop_slot}")
     app._pad_drag_end(_Ev())
     cells_now = app._pad_layout["pages"][0]["cells"]
-    check("松手即交换：源格的按钮整体落到目标格，选中跟着按钮走",
-          cells_now[2]["text"] == text_before and cells_now[2]["note"] == note_before
+    check("松手即交换：文字与颜色整体落到目标格，选中跟着按钮走；**音符留在位置上**",
+          cells_now[2]["text"] == text_before and cells_now[2]["note"] == 36 + 2
           and app._pad_sel == 2,
-          f"0 号格的 '{text_before}'/N{note_before} 现在在第 3 格")
+          f"0 号格 '{text_before}' -> 第 3 格 '{cells_now[2]['text']}'/N{cells_now[2]['note']}"
+          f"（音符按位置算 = N38，所以拖动换位不需要在 DAW 里重学）；选中={app._pad_sel}")
 
     # 页数固定 6 页（D18）：编辑器给出 6 个页签，且不存在加页/删页的方法
     check("编辑器固定 6 页：6 个页签、没有加页/删页的入口",

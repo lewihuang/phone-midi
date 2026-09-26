@@ -1,224 +1,43 @@
 <!DOCTYPE html>
-
 <html lang="zh-CN">
-
 <head>
-
 <meta charset="UTF-8">
-
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-
-<title>Phone MIDI CC</title>
-
-<link rel="stylesheet" href="ios.css?v=5">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>MIDI Deck</title>
+<link rel="stylesheet" href="ios.css?v=6">
 <style>
-  /* 页面专属：单栏 360px。面板切换靠 .hidden / .show（app.js 在用这两个类名，必须保留）。 */
+  /* 首页：只有功能模块列表。点进去才是具体工具（推子 / 模拟按钮 / 以后新增的）。 */
   body { display: flex; flex-direction: column; align-items: center; }
-  .status { margin-bottom: 16px; }
-  .setup, .runtime { width: 100%; max-width: 360px; }
-  .setup { display: flex; flex-direction: column; align-items: center; }
-  .setup.hidden { display: none; }
-  .runtime { display: none; flex-direction: column; align-items: center; }
-  .runtime.show { display: flex; }
-  .runtime-head { width: 100%; display: flex; align-items: center; justify-content: space-between;
-                  gap: 8px; margin-bottom: 12px; }
-  .runtime-mode { font-size: 13px; color: var(--label-2); text-align: right; flex: 1; }
-  .runtime-mode strong { color: var(--label); }
-  .cal-row.hidden { display: none; }
-  .pitch-display { margin: 4px 0 24px; }
-  .pitch-value { font-size: 72px; }
-  .bar-wrap { margin-bottom: 8px; }
-  .cc-row { font-family: var(--mono); }
-  .cc-tag { background: var(--fill); padding: 3px 8px; border-radius: 6px; color: var(--blue); }
-  .cc-val { font-weight: 600; }
-  .btn { width: 100%; margin-top: 12px; }
-  .btn.send-on, .btn.send-off { max-width: 160px; margin-top: 0; flex: 1; }
-  .btn-row { width: 100%; margin-top: 18px; }
-  .cfg-row { display: none; }
-  .cfg-row.show { display: flex; }
-  .cfg-select { max-width: 66px; min-height: 32px; padding: 0 4px; font-size: 13px; }
-  .range-input { width: 58px; min-height: 32px; text-align: center; font-family: var(--mono); }
-  .hint { margin-top: 12px; text-align: center; }
-  .error { margin-top: 10px; }
-  .shake-note { margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .brand { position: fixed; bottom: 10px; right: 12px; font-size: 10px; color: var(--label-3);
-           text-align: right; line-height: 1.4; }
+  .title-block { width: 100%; max-width: 420px; margin-bottom: 16px; }
+  h1 { margin-bottom: 2px; }
 </style>
-
 </head>
-
 <body>
 
-
-
-<div class="status off" id="status">● 未连接</div>
-
-
-
-<div class="setup" id="setupPanel">
-
-  <header class="setup-header">
-
-    <h1 class="setup-title">手机 MIDI 推子</h1>
-
-    <div class="setup-intro">
-
-      <p>用手机传感器向电脑上的 DAW 发送 MIDI 控制信号。请先确保电脑已运行 Bridge，手机与电脑在同一局域网。</p>
-
-      <ol>
-
-        <li>选择下方控制方式（抬手 / 翻转 / 摇晃弯音）</li>
-
-        <li>模式 A、B 需先完成校准；模式 C 直接可用（静止时自动居中，无需校准）</li>
-
-        <li>启动后倾斜或晃动手机，观察数值与 DAW 中的 MIDI 响应</li>
-
-      </ol>
-
-    </div>
-
-  </header>
-
-  <div class="mode-setup" id="modeSetup">
-
-    <label class="mode-label" for="modeSelect">控制方式</label>
-
-    <select class="mode-select" id="modeSelect" aria-label="选择控制方式">
-
-      <option value="A">A · 抬手推子</option>
-
-      <option value="B">B · 翻转推子</option>
-
-      <option value="C">C · 摇晃弯音</option>
-
-    </select>
-
-    <p class="mode-desc" id="modeDesc"></p>
-
-    <div class="cal-row" id="calRow">
-
-      <span class="cal-badge warn" id="calBadge">未校准</span>
-
-      <a class="link-cal" id="calLink" href="/calibrate-lift.html">去校准</a>
-
-    </div>
-
-  </div>
-
-  <button class="btn" id="btnStart" onclick="start()" disabled>启动 · 抬手推子</button>
-
-  <p class="hint" id="hint">选择模式后可启动；A/B 需先完成对应校准</p>
-
-  <p class="hint" style="margin-top:6px"><a href="/latency.html" style="color:#475569;text-decoration:none">延迟诊断 · 跟手调参</a></p>
-
-  <p class="hint" style="margin-top:6px"><a href="/pad.html" style="color:#475569;text-decoration:none">快捷键面板 · 宏命令按钮</a></p>
-
+<div class="title-block">
+  <h1>MIDI Deck</h1>
+  <p class="sub">选一个功能模块</p>
 </div>
 
-
-
-<div class="runtime" id="runtimePanel">
-
-  <div class="runtime-head">
-
-    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">← 返回</button>
-
-    <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
-
-  </div>
-
-
-
-  <div class="pitch-display">
-
-    <div class="pitch-value" id="pitchDeg">—</div>
-
-    <div class="pitch-label" id="unitLabel">CC</div>
-
-  </div>
-
-
-
-  <div class="bar-wrap">
-
-    <div class="bar-fill" id="bar" style="width: 50%"></div>
-
-  </div>
-
-
-
-  <div class="cc-row">
-
-    <span>映射</span>
-
-    <span class="cc-tag" id="ccTag">CC1 Ch1</span>
-
-    <span>→</span>
-
-    <span class="cc-val" id="ccVal">—</span>
-
-  </div>
-
-
-
-  <p class="shake-note" id="modeNote" style="display:none"></p>
-
-
-
-  <div class="cfg-row" id="cfgRow">
-
-    <span class="range-label cc-cfg">CC</span>
-
-    <input class="range-input cc-cfg" id="selCc" type="number" value="1" min="0" max="127" step="1">
-
-    <span class="range-label cc-cfg">Ch</span>
-
-    <select class="cfg-select ch-cfg" id="selCh"></select>
-
-    <span class="range-label depth-cfg">深度</span>
-
-    <input class="range-input depth-cfg" id="inDepth" type="number" value="1" min="0.25" max="2" step="0.05">
-
-    <input class="range-input range-cfg" id="inMin" type="number" value="0" step="0.01">
-
-    <span class="range-label range-cfg" id="rangeSep">~</span>
-
-    <input class="range-input range-cfg" id="inMax" type="number" value="1" step="0.01">
-
-    <span class="range-label range-cfg" id="rangeUnit"></span>
-
-  </div>
-
-
-
-  <div class="error" id="error"></div>
-
-
-
-  <div class="btn-row" id="btnRow">
-
-    <button class="btn send-on" id="btnSend" onclick="toggleSend()">发送中</button>
-
-  </div>
-
-</div>
-
-
+<nav class="module-list">
+  <a class="module" href="/fader.html">
+    <span class="m-text">
+      <span class="m-name">手机推子</span>
+      <span class="m-desc">手机姿态当推子：抬手 / 翻转 / 摇晃弯音</span>
+    </span>
+    <span class="m-arrow">›</span>
+  </a>
+  <a class="module" href="/pad.html">
+    <span class="m-text">
+      <span class="m-name">模拟按钮</span>
+      <span class="m-desc">宏命令按钮阵列，配 DAW 快捷键用（8 键 × 6 页）</span>
+    </span>
+    <span class="m-arrow">›</span>
+  </a>
+</nav>
 
 <div class="brand"><br>Powered by Levi黄</div>
 
-
-
-<script src="fusion.js?v=23"></script>
-
-<!-- vibrato.js is only loaded for its keep-awake helper here; the rotational vibrato engine
-     itself is no longer wired to any mode (it lives on /vibrato-lab.html for experiments). -->
-<script src="vibrato.js?v=23"></script>
-
-<script src="app.js?v=23"></script>
-
 </body>
-
 </html>
-
-

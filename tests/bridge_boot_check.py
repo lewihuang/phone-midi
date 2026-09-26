@@ -52,8 +52,8 @@ try:
     else:
         check("bridge starts from the CLI (with --pb-idle-ms)", up, f"listening on http://127.0.0.1:{PORT}")
         if up:
-            idx = fetch("/index.html")
-            check("serves index.html with vibrato.js", "vibrato.js?v=" in idx, f"{len(idx)} bytes")
+            idx = fetch("/fader.html")
+            check("serves fader.html with vibrato.js", "vibrato.js?v=" in idx, f"{len(idx)} bytes")
             vib = fetch("/vibrato.js")
             check("serves the current vibrato.js",
                   "pm.vibrato.cal.v1" in vib and "measureRate" in vib and "stallSec" in vib,
