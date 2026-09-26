@@ -27,9 +27,9 @@
   .status.wait { background: #713f12; color: #fcd34d; }
   .status.on { background: #065f46; color: #6ee7b7; }
 
-  /* 4×2, fixed: the PC editor mirrors exactly this, so the layout is never device-dependent. */
+  /* 2 列 × 4 行，固定：PC 编辑器镜像同一套格子，形状改了必须两端一起改 */
   #grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
-          grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); }
+          grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(4, 1fr); }
 
   .cell { position: relative; display: flex; align-items: center; justify-content: center;
           padding: 8px; border-radius: 14px; overflow: hidden; background: #1e293b; color: #fff;
@@ -65,6 +65,6 @@
 <p id="err"></p>
 <p class="foot"><a href="/">← 返回推子</a></p>
 
-<script src="pad.js?v=23"></script>
+<script src="pad.js?v=24"></script>
 </body>
 </html>

@@ -288,7 +288,7 @@ class SensorHandler:
         # Shortcut Pad: the layout lives here (single source of truth, pushed to every phone)
         # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
         self.pad_layout = load_pad_layout()
-        self._pad_held: dict[int, float] = {}      # trigger id → monotonic time of its Note On
+        self._pad_held: dict[int, tuple[float, int]] = {}   # 触发编号 → (按下时刻, 当时发的音符)
 
     @property
     def client_count(self): return len(self._clients)
@@ -334,28 +334,35 @@ class SensorHandler:
 
     # ── 快捷键面板（Shortcut Pad） ─────────────────────────────────────────────
 
+    def pad_note(self, trigger_id: int) -> int:
+        """触发要发的音符：优先读布局（T2：编号与位置解绑），没有就退回 `36 + 编号`。"""
+        return pad_note_in_layout(self.pad_layout, trigger_id)
+
     def pad_note_on(self, trigger_id: int):
-        note = pad_note_for(trigger_id)
+        tid = int(trigger_id)
+        note = self.pad_note(tid)
         try:
             self.pad_midi.send_note(note, PAD_CHANNEL, 127)
         except Exception as e:
             log.warning("快捷键触发失败（note %d）：%s", note, e)
             return
-        self._pad_held[int(trigger_id)] = time.monotonic()
+        # Remember the note we actually sent: if the layout is edited while the button is held,
+        # the release must still close *that* note, not whatever the cell says now.
+        self._pad_held[tid] = (time.monotonic(), note)
         self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
 
     def pad_note_off(self, trigger_id: int) -> bool:
         """Send the matching Note Off. Returns whether a Note On was actually open."""
         tid = int(trigger_id)
         if tid not in self._pad_held: return False
-        del self._pad_held[tid]
-        try: self.pad_midi.send_note(pad_note_for(tid), PAD_CHANNEL, 0)
-        except Exception as e: log.warning("快捷键松开失败（note %d）：%s", pad_note_for(tid), e)
+        _at, note = self._pad_held.pop(tid)
+        try: self.pad_midi.send_note(note, PAD_CHANNEL, 0)
+        except Exception as e: log.warning("快捷键松开失败（note %d）：%s", note, e)
         return True
 
     def pad_held_expired(self, now: float | None = None) -> list[int]:
         t = time.monotonic() if now is None else now
-        return [tid for tid, at in self._pad_held.items() if t - at > PAD_HOLD_GUARD_SEC]
+        return [tid for tid, (at, _note) in self._pad_held.items() if t - at > PAD_HOLD_GUARD_SEC]
 
     async def pad_watchdog(self):
         """Release triggers whose 'up' never arrived (page closed, WiFi drop, tab killed).
@@ -678,9 +685,11 @@ def save_window_prefs(prefs: dict):
 # 布局由 Bridge 拥有并下发给手机（Layout Push），用户配置在 PC 端完成。
 # 设计与取舍：docs/spec/shortcut-pad.md、docs/adr/0004-midi-note-triggers.md
 PAD_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "pad.json"
-PAD_SLOTS = 8                 # 4 列 × 2 行，固定；PC 编辑器镜像同一套格子
+PAD_COLS = 2                  # 2 列 × 4 行（2026-09-26 由 4×2 改；手机与 PC 编辑器必须同构）
+PAD_ROWS = 4
+PAD_SLOTS = PAD_COLS * PAD_ROWS
 PAD_PAGES_MAX = 8
-PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36
+PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36（**默认值**；每格可在 PC 端改，见 T2）
 PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在通道分开，便于 DAW 侧过滤
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
 PAD_DEFAULT_TITLE = "快捷键面板"
@@ -695,26 +704,78 @@ def pad_trigger_count() -> int:
     return PAD_SLOTS * PAD_PAGES_MAX
 
 def pad_note_for(trigger_id: int) -> int:
+    """**默认**音符：36 + 触发编号。配置里没写 note 时用它（旧配置因此行为不变）。"""
     return PAD_NOTE_BASE + int(trigger_id)
+
+def pad_note_valid(note) -> bool:
+    return isinstance(note, int) and not isinstance(note, bool) and 0 <= note <= 127
 
 def pad_trigger_valid(trigger_id) -> bool:
     try: i = int(trigger_id)
     except (TypeError, ValueError): return False
     return 0 <= i < pad_trigger_count()
 
+def pad_note_in_layout(layout, trigger_id: int) -> int:
+    """格子自己的音符（T2：编号与位置解绑）。
+
+    找不到 / 非法就退回默认公式。这条兜底很重要：手改坏的 pad.json 不能让某个按钮
+    发不出命令，也不能发出一个越界的音符。
+    """
+    tid = int(trigger_id)
+    page_index, slot = divmod(tid, PAD_SLOTS)
+    pages = layout.get("pages") if isinstance(layout, dict) else None
+    if isinstance(pages, list) and 0 <= page_index < len(pages):
+        cells = pages[page_index].get("cells") if isinstance(pages[page_index], dict) else None
+        if isinstance(cells, list) and 0 <= slot < len(cells) and isinstance(cells[slot], dict):
+            note = cells[slot].get("note")
+            if pad_note_valid(note): return note
+    return pad_note_for(tid)
+
+def pad_duplicate_notes(layout) -> dict[int, int]:
+    """音符 → 出现次数（>1 即为重复）。重复不会禁止，但编辑器要把它显示出来。"""
+    counts: dict[int, int] = {}
+    pages = layout.get("pages") if isinstance(layout, dict) else None
+    if not isinstance(pages, list): return counts
+    for page_index, page in enumerate(pages):
+        cells = page.get("cells") if isinstance(page, dict) else None
+        if not isinstance(cells, list): continue
+        for slot in range(len(cells)):
+            note = pad_note_in_layout(layout, page_index * PAD_SLOTS + slot)
+            counts[note] = counts.get(note, 0) + 1
+    return counts
+
+def pad_swap_cells(layout, page_index: int, slot_a: int, slot_b: int) -> bool:
+    """交换同一页里两格的**整格内容**（文字 + 颜色 + 音符）。
+
+    拖动落地用的就是这个：交换而不是"插入顺移"，因为固定 8 格没有下一页接住被挤出去的那个。
+    返回是否真的动了（同格、越界、页不存在都返回 False）。
+    """
+    pages = layout.get("pages") if isinstance(layout, dict) else None
+    if not isinstance(pages, list) or not (0 <= page_index < len(pages)): return False
+    cells = pages[page_index].get("cells")
+    if not isinstance(cells, list): return False
+    if slot_a == slot_b: return False
+    if not (0 <= slot_a < len(cells) and 0 <= slot_b < len(cells)): return False
+    cells[slot_a], cells[slot_b] = cells[slot_b], cells[slot_a]
+    return True
+
 def default_pad_layout() -> dict:
+    note = pad_note_for
     return {"version": 1, "pages": [{
         "title": PAD_DEFAULT_TITLE,
-        "cells": [{"text": "宏 %d" % (i + 1), "color": PAD_COLORS[0]} for i in range(PAD_SLOTS)],
+        "cells": [{"text": "宏 %d" % (i + 1), "color": PAD_COLORS[0], "note": note(i)}
+                  for i in range(PAD_SLOTS)],
     }]}
 
-def _pad_clean_cell(cell) -> dict:
-    out = {"text": "", "color": PAD_COLORS[0]}
+def _pad_clean_cell(cell, trigger_id: int) -> dict:
+    """一格：文字 / 颜色 / **音符**。缺字段一律补默认值，非法值一律丢掉。"""
+    out = {"text": "", "color": PAD_COLORS[0], "note": pad_note_for(trigger_id)}
     if isinstance(cell, dict):
         text = cell.get("text")
         if isinstance(text, str): out["text"] = text[:PAD_TEXT_MAX]
         color = cell.get("color")
         if isinstance(color, str) and color in PAD_COLORS: out["color"] = color
+        if pad_note_valid(cell.get("note")): out["note"] = cell["note"]
     return out
 
 def pad_clean_layout(layout) -> dict:
@@ -725,18 +786,21 @@ def pad_clean_layout(layout) -> dict:
     """
     pages = []
     if isinstance(layout, dict) and isinstance(layout.get("pages"), list):
-        for page in layout["pages"][:PAD_PAGES_MAX]:
+        for page_index, page in enumerate(layout["pages"][:PAD_PAGES_MAX]):
             if not isinstance(page, dict): continue
             title = page.get("title")
             cells = page.get("cells")
+            base = page_index * PAD_SLOTS
             pages.append({
                 "title": title[:PAD_TEXT_MAX] if isinstance(title, str) and title else PAD_DEFAULT_TITLE,
-                "cells": [_pad_clean_cell(c) for c in (cells if isinstance(cells, list) else [])][:PAD_SLOTS],
+                "cells": [_pad_clean_cell(c, base + i)
+                          for i, c in enumerate(cells if isinstance(cells, list) else [])][:PAD_SLOTS],
             })
     if not pages: return default_pad_layout()
-    # Pad every page out to a full 4×2 grid so the phone always renders the same shape.
-    for page in pages:
-        while len(page["cells"]) < PAD_SLOTS: page["cells"].append(_pad_clean_cell(None))
+    # Pad every page out to a full grid so the phone always renders the same shape (2 列 × 4 行).
+    for page_index, page in enumerate(pages):
+        while len(page["cells"]) < PAD_SLOTS:
+            page["cells"].append(_pad_clean_cell(None, page_index * PAD_SLOTS + len(page["cells"])))
     return {"version": 1, "pages": pages}
 
 def load_pad_layout() -> dict:
@@ -872,6 +936,9 @@ class BridgeApp:
         self._pad_swatches = []
         self._pad_save_timer = None
         self._pad_confirm_delete = False
+        self._pad_drag_from = None       # 拖动源格（None = 没在拖）
+        self._pad_drop_slot = None       # 当前落点格
+        self._pad_slot_at = {}           # widget → slot，拖动时反查落点
         self._build_setup()
 
     # ── Setup View ────────────────────────────────────────────────────────
@@ -1257,8 +1324,8 @@ class BridgeApp:
         self._pad_win = win
         win.title("快捷键面板 · 编辑")
         win.configure(bg=BG)
-        win.geometry("600x600")
-        win.minsize(520, 520)
+        win.geometry("520x820")
+        win.minsize(460, 700)
         win.protocol("WM_DELETE_WINDOW", self._close_pad_editor)
         self._pad_body = tk.Frame(win, bg=BG)
         self._pad_body.pack(fill=tk.BOTH, expand=True)
@@ -1329,25 +1396,29 @@ class BridgeApp:
         title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
         title_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_title())
 
-        # 4×2 网格：与手机严格同构（4 列 2 行，行优先就是编号顺序）
+        # 2 列 × 4 行网格：与手机严格同构（行优先 = 编号顺序；形状改了必须两端一起改）
         grid = tk.Frame(self._pad_body, bg=BG)
         grid.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
-        for r in range(2): grid.rowconfigure(r, weight=1)
-        for c in range(4): grid.columnconfigure(c, weight=1)
+        for r in range(PAD_ROWS): grid.rowconfigure(r, weight=1)
+        for c in range(PAD_COLS): grid.columnconfigure(c, weight=1)
+        self._pad_slot_at = {}          # widget → slot（拖动时靠 winfo_containing 反查落点）
         for slot in range(PAD_SLOTS):
             frame = tk.Frame(grid, bg=PAD_COLORS[0], highlightthickness=2,
                              highlightbackground=BG, cursor="hand2")
-            frame.grid(row=slot // 4, column=slot % 4, sticky="nsew", padx=3, pady=3)
+            frame.grid(row=slot // PAD_COLS, column=slot % PAD_COLS, sticky="nsew", padx=3, pady=3)
             label = tk.Label(frame, text="", font=FONT_BOLD, bg=PAD_COLORS[0], fg="#FFFFFF",
                              wraplength=110, justify="center")
             label.pack(fill=tk.BOTH, expand=True, padx=6, pady=(8, 0))
             note = tk.Label(frame, text="", font=("Consolas", 8), bg=PAD_COLORS[0], fg="#C8CDD6")
             note.pack(side=tk.BOTTOM, anchor="e", padx=6, pady=(0, 4))
             for w in (frame, label, note):
-                w.bind("<Button-1>", lambda _e, s=slot: self._pad_select(s))
+                self._pad_slot_at[w] = slot
+                w.bind("<Button-1>", lambda _e, s=slot: self._pad_drag_start(s))
+                w.bind("<B1-Motion>", self._pad_drag_motion)
+                w.bind("<ButtonRelease-1>", self._pad_drag_end)
             self._pad_cells.append({"frame": frame, "label": label, "note": note})
 
-        # 选中格子：文字 + 固定调色板（不用系统取色器：模态弹窗，而且容易选到看不清的颜色）
+        # 选中格子：文字 + 音符 + 固定调色板（不用系统取色器：模态弹窗，而且容易选到看不清的颜色）
         edit = tk.Frame(self._pad_body, bg=BG)
         edit.pack(fill=tk.X, padx=16)
         tk.Label(edit, text="按钮文字", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
@@ -1356,6 +1427,20 @@ class BridgeApp:
                                    fg=FG, insertbackground=FG, relief=tk.FLAT, state=tk.DISABLED)
         self._pad_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), ipady=3)
         self._pad_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_text())
+
+        # 音符：每格自己的 MIDI 音符（0–127）。与格子位置**解绑**，所以拖动换位不会影响它，
+        # 也因此可以把它挪出音源的键区来避开"音源跟着弹音"。
+        note_row = tk.Frame(self._pad_body, bg=BG)
+        note_row.pack(fill=tk.X, padx=16, pady=(6, 0))
+        tk.Label(note_row, text="音符", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
+        self._pad_note_var = tk.StringVar()
+        self._pad_note_entry = tk.Entry(note_row, textvariable=self._pad_note_var, font=FONT,
+                                        bg=SURFACE, fg=FG, insertbackground=FG, relief=tk.FLAT,
+                                        width=5, justify=tk.CENTER, state=tk.DISABLED)
+        self._pad_note_entry.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
+        self._pad_note_entry.bind("<KeyRelease>", lambda _e: self._pad_edit_note())
+        tk.Label(note_row, text="0–127（Nuendo 侧要在映射助手里学这一条；改完需要重学一次）",
+                 font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(10, 0))
 
         pal = tk.Frame(self._pad_body, bg=BG)
         pal.pack(fill=tk.X, padx=16, pady=(10, 4))
@@ -1372,11 +1457,12 @@ class BridgeApp:
 
         self._pad_redraw()
 
-    def _pad_redraw(self):
-        """In-place refresh: safe while typing, because it never recreates widgets."""
+    def _pad_redraw_cells(self):
+        """只重画页签与格子（**不碰输入框**）：拖动的过程会反复调用它，碰输入框会和打字打架。"""
         if self._pad_win is None: return
         page = self._pad_page_data()
         cells = page.get("cells") if isinstance(page.get("cells"), list) else []
+        dup = pad_duplicate_notes(self._pad_layout)
         for i, b in enumerate(self._pad_tab_btns):
             title = (self._pad_pages()[i].get("title") or ("页 %d" % (i + 1)))[:12]
             b.configure(text=title, bg=(BORDER if i == self._pad_page else SURFACE),
@@ -1384,19 +1470,33 @@ class BridgeApp:
         for slot, widgets in enumerate(self._pad_cells):
             cfg = cells[slot] if slot < len(cells) and isinstance(cells[slot], dict) else {}
             color = cfg.get("color") if cfg.get("color") in PAD_COLORS else PAD_COLORS[0]
-            selected = (slot == self._pad_sel)
-            widgets["frame"].configure(bg=color, highlightbackground=("#60A5FA" if selected else BG))
+            note = pad_note_in_layout(self._pad_layout, self._pad_page * PAD_SLOTS + slot)
+            if slot == self._pad_drop_slot and self._pad_drag_from is not None:
+                border = "#F59E0B"                      # 拖动的落点
+            elif slot == self._pad_sel:
+                border = "#60A5FA"                      # 当前选中
+            else:
+                border = BG
+            widgets["frame"].configure(bg=color, highlightbackground=border)
             widgets["label"].configure(text=cfg.get("text") or "", bg=color)
-            widgets["note"].configure(bg=color,
-                                      text="N%d" % pad_note_for(self._pad_page * PAD_SLOTS + slot))
+            widgets["note"].configure(bg=color, text="N%d" % note,
+                                      fg=(AMBER if dup.get(note, 0) > 1 else "#C8CDD6"))
+
+    def _pad_redraw(self):
+        """重画格子 + 同步两个输入框的显示与可用状态。"""
+        if self._pad_win is None: return
+        self._pad_redraw_cells()
+        entries = ((self._pad_entry, self._pad_text_var), (self._pad_note_entry, self._pad_note_var))
         if self._pad_sel is None:
-            self._pad_entry.configure(state=tk.NORMAL)
-            self._pad_text_var.set("")
-            self._pad_entry.configure(state=tk.DISABLED)
+            for entry, var in entries:
+                entry.configure(state=tk.NORMAL); var.set(""); entry.configure(state=tk.DISABLED)
         else:
             cfg = self._pad_cell(self._pad_sel) or {}
             self._pad_entry.configure(state=tk.NORMAL)
             self._pad_text_var.set(cfg.get("text") or "")
+            self._pad_note_entry.configure(state=tk.NORMAL)
+            self._pad_note_var.set(str(pad_note_in_layout(
+                self._pad_layout, self._pad_page * PAD_SLOTS + self._pad_sel)))
 
     # ── 编辑动作 ──
 
@@ -1404,6 +1504,7 @@ class BridgeApp:
         self._pad_page = index
         self._pad_sel = None
         self._pad_confirm_delete = False
+        self._pad_drag_from = self._pad_drop_slot = None
         self._pad_render()
 
     def _pad_select(self, slot):
@@ -1411,6 +1512,45 @@ class BridgeApp:
         self._pad_entry.configure(state=tk.NORMAL)
         self._pad_redraw()
         self._pad_entry.focus_set()
+
+    # ── 拖动换位（落下即交换） ──
+    #
+    # 拖动只在 PC 编辑器里做（手机是哑显示端）。实现上不用系统级 DnD：按下记源格，
+    # 移动时用 winfo_containing 反查光标下的格子并高亮，松手时交换整格内容。
+    # 交换而非"插入顺移"：固定 8 格没有下一页接住被挤出去的那个（spec Q-a）。
+
+    def _pad_drag_start(self, slot):
+        self._pad_select(slot)
+        self._pad_drag_from = slot
+        self._pad_drop_slot = slot
+
+    def _pad_drag_motion(self, event):
+        if self._pad_drag_from is None: return
+        slot = self._pad_cell_at(event.x_root, event.y_root)
+        if slot != self._pad_drop_slot:
+            self._pad_drop_slot = slot
+            self._pad_redraw_cells()
+
+    def _pad_drag_end(self, event):
+        src, dst = self._pad_drag_from, self._pad_drop_slot
+        self._pad_drag_from = self._pad_drop_slot = None
+        if src is None or dst is None or src == dst:
+            self._pad_redraw_cells(); return
+        if pad_swap_cells(self._pad_layout, self._pad_page, src, dst):
+            self._pad_sel = dst                       # 选中的按钮跟着手指走
+            self._pad_commit()
+            self._pad_status("已交换第 %d 与第 %d 格（触发编号仍跟位置走）" % (src + 1, dst + 1))
+            self._pad_redraw()
+        else:
+            self._pad_redraw_cells()
+
+    def _pad_cell_at(self, x_root, y_root):
+        """光标下的格子（winfo_containing 给的是最内层 widget，所以每个 widget 都记了 slot）。"""
+        try:
+            widget = self._pad_win.winfo_containing(x_root, y_root)
+        except (tk.TclError, KeyError):
+            return None
+        return self._pad_slot_at.get(widget)
 
     def _pad_edit_text(self):
         if self._pad_sel is None: return
@@ -1420,6 +1560,26 @@ class BridgeApp:
         if text == (cell.get("text") or ""): return
         cell["text"] = text
         self._pad_cells[self._pad_sel]["label"].configure(text=text)
+        self._pad_commit_soon()
+
+    def _pad_edit_note(self):
+        """改音符：非法输入直接忽略（不要写进模型），合法则落盘并广播。
+
+        注意这里**不重画输入框**，否则正在输入的后一位数字会被覆盖。
+        """
+        if self._pad_sel is None: return
+        cell = self._pad_cell(self._pad_sel)
+        if cell is None: return
+        raw = self._pad_note_var.get().strip()
+        try: note = int(raw)
+        except (TypeError, ValueError):
+            self._pad_status("音符要是 0–127 的整数"); return
+        if not pad_note_valid(note):
+            self._pad_status("音符要在 0–127 之间"); return
+        if note == cell.get("note"): return
+        cell["note"] = note
+        self._pad_status("")
+        self._pad_redraw_cells()                      # 重复音符的提示跟着更新
         self._pad_commit_soon()
 
     def _pad_edit_title(self):

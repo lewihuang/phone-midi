@@ -13,9 +13,11 @@
 (() => {
   'use strict';
 
-  const COLS = 4;
-  const ROWS = 2;
+  const COLS = 2;
+  const ROWS = 4;
   const SLOTS = COLS * ROWS;   // 8 cells per page — the PC editor mirrors exactly this grid
+  // Forced reflow to reflect: 2 columns x 4 rows (2026-09-26, was 4x2: the wide short buttons
+  // wasted the phone's vertical space). Row-major order is what ties a slot to its trigger id.
   const MAX_PAGES = 8;
   const NOTE_BASE = 36;        // trigger id 0 -> note 36 (channel 16, see the ADR)
   const RECONNECT_MS = 2000;

@@ -179,7 +179,15 @@ function check(name, ok, detail) {
   const press = (i, pointerId) => grid.children[i].dispatch('pointerdown', { pointerId, preventDefault() {} });
   const release = (i, pointerId) => grid.children[i].dispatch('pointerup', { pointerId });
 
-  check('pad: renders 4×2 = 8 cells', grid.children.length === 8, `${grid.children.length} cells`);
+  check('pad: 8 cells', grid.children.length === 8, `${grid.children.length} cells`);
+  // 形状必须两端一致：CSS 定形状、pad.js 定编号顺序，改一个不改另一个就是错的
+  const padHtml = htmlOf('pad');
+  const padScript = fs.readFileSync(web('pad.js'), 'utf8');
+  check('pad: 2 columns × 4 rows, CSS and pad.js agree',
+    /grid-template-columns:\s*repeat\(2,\s*1fr\)/.test(padHtml)
+    && /grid-template-rows:\s*repeat\(4,\s*1fr\)/.test(padHtml)
+    && /const COLS = 2;/.test(padScript) && /const ROWS = 4;/.test(padScript),
+    'CSS 2×4 = pad.js COLS/ROWS');
   check('pad: cells carry their trigger numbers N36…N43',
     grid.children.map((_c, i) => cellNote(i)).join(' ') === Array.from({ length: 8 }, (_v, i) => `N${36 + i}`).join(' '),
     `N36 N37 N38 N39 …`);

@@ -40,6 +40,11 @@ def check(name, ok, detail=""):
 tmpdir = tempfile.mkdtemp(prefix="pad-check-")
 server.PAD_PREFS = __import__("pathlib").Path(tmpdir) / "pad.json"
 
+
+def reset_pad_file():
+    """布局是**跨块共享**的持久状态（pad.json）：每个块开始前复位成默认，断言才有确定性。"""
+    server.save_pad_layout({"pages": []})          # 空布局 → 清洗成默认（音符 36+）
+
 CFG = {"preset_name": "pad-check", "mappings": [{
     # shaped like the shipped default: the fader's CC1, which must keep using the fader port
     "source": {"type": "sensor", "sensor": "rotation_vector", "axis": "fused_lift"},
@@ -124,7 +129,60 @@ check("落盘后能读回，且读回时已被清洗",
       and len(server.load_pad_layout()["pages"][0]["cells"]) == 8,
       f"{server.PAD_PREFS.name}")
 
+# ── 2b. 音符：默认值、可改、与格子位置解绑（T2） ───────────────────────────────
+check("形状是 2 列 × 4 行",
+      (server.PAD_COLS, server.PAD_ROWS, server.PAD_SLOTS) == (2, 4, 8),
+      f"{server.PAD_COLS} 列 × {server.PAD_ROWS} 行 = {server.PAD_SLOTS} 格")
+
+note_default = server.pad_clean_layout({"pages": [{"cells": []}, {"cells": []}]})
+check("缺 note 时按位置补默认值：第 1 页 36 起、第 2 页 44 起",
+      [c["note"] for c in note_default["pages"][0]["cells"]] == list(range(36, 44))
+      and [c["note"] for c in note_default["pages"][1]["cells"]] == list(range(44, 52)),
+      f"p1 首格 {note_default['pages'][0]['cells'][0]['note']}，p2 首格 {note_default['pages'][1]['cells'][0]['note']}")
+
+note_kept = server.pad_clean_layout({"pages": [{"cells": [
+    {"note": 100}, {"note": 200}, {"note": "x"}, {"note": True}, {"note": -1},
+]}]})["pages"][0]["cells"]
+check("自己设的音符被保留，越界/非整数/布尔一律退回默认",
+      [c["note"] for c in note_kept[:5]] == [100, 37, 38, 39, 40],
+      f"{[c['note'] for c in note_kept[:5]]}")
+
+layout_with_note = server.pad_clean_layout({"pages": [{"cells": [{"note": 50}]}]})
+check("按布局查音符；查不到或用例非法时退回 36+编号",
+      server.pad_note_in_layout(layout_with_note, 0) == 50
+      and server.pad_note_in_layout(layout_with_note, 1) == 37
+      and server.pad_note_in_layout({"pages": []}, 0) == 36,
+      "id 0 -> 50（布局里写的），id 1 -> 37（默认）")
+
+dupes = server.pad_duplicate_notes(server.pad_clean_layout({"pages": [
+    {"cells": [{"note": 60}, {"note": 60}]},
+    {"cells": [{"note": 60}]},
+]}))
+# 断言性质而不是手算的具体默认值：两页共 16 格，其中 60 出现 3 次，其余每个音符恰好一次。
+check("重复音符能被数出来（跨页也算，编辑器据此提示）",
+      dupes.get(60) == 3 and sum(dupes.values()) == 2 * server.PAD_SLOTS
+      and sorted(dupes.values()) == [1] * (len(dupes) - 1) + [3],
+      f"60 出现 {dupes.get(60)} 次；共 {sum(dupes.values())} 格 / {len(dupes)} 个不同音符")
+
+swap_layout = server.pad_clean_layout({"pages": [{"cells": [
+    {"text": "甲", "color": server.PAD_COLORS[2], "note": 99},
+    {"text": "乙", "color": server.PAD_COLORS[4], "note": 12},
+]}]})
+before = [dict(c) for c in swap_layout["pages"][0]["cells"][:2]]
+moved = server.pad_swap_cells(swap_layout, 0, 0, 1)
+after = swap_layout["pages"][0]["cells"][:2]
+check("交换两格：整格内容（文字+颜色+音符）一起走，一个字段都不丢",
+      moved and after[0] == before[1] and after[1] == before[0]
+      and set(after[0]) == {"text", "color", "note"},
+      f"0 号格现在是 {after[0]['text']}/N{after[0]['note']}")
+check("交换的边界：同格/越界/没有这一页都不动",
+      not server.pad_swap_cells(swap_layout, 0, 1, 1)
+      and not server.pad_swap_cells(swap_layout, 0, 0, 99)
+      and not server.pad_swap_cells(swap_layout, 9, 0, 1),
+      "返回 False 且布局不变")
+
 # ── 3. 触发 → MIDI Note ──────────────────────────────────────────────────────
+reset_pad_file()
 h, _eng = handler_with_midi()
 asyncio.run(h._on_trigger({"kind": "trigger", "id": 3, "phase": "down"}))
 check("按下发一条 Note On（127）",
@@ -144,6 +202,23 @@ h.midi.notes.clear()
 asyncio.run(h._on_trigger({"kind": "trigger", "id": 9999, "phase": "down"}))
 asyncio.run(h._on_trigger({"kind": "trigger", "id": None, "phase": "down"}))
 check("越界编号什么都不发", h.midi.notes == [], f"{h.midi.notes}")
+
+# ── 3c. 触发发的音符来自布局（T2 解绑之后的行为） ──────────────────────────────
+custom, _ = handler_with_midi()
+custom.set_pad_layout({"pages": [{"cells": [{"note": 60}, {"note": 61}]}]})
+asyncio.run(custom._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
+check("按布局发音符：第 1 格改成 60 就发 60（不再是 36）",
+      custom.midi.notes == [(60, 15, 127)], f"{custom.midi.notes}")
+asyncio.run(custom._on_trigger({"kind": "trigger", "id": 1, "phase": "down"}))
+check("同一页每一格用自己的音符", custom.midi.notes[-1] == (61, 15, 127), f"{custom.midi.notes[-1]}")
+# 按住期间把这一格的编号改掉：松开必须关掉**当初发出去的那一条**，否则 DAW 里会留一个挂着的 Note
+custom.set_pad_layout({"pages": [{"cells": [{"note": 70}, {"note": 61}]}]})
+asyncio.run(custom._on_trigger({"kind": "trigger", "id": 0, "phase": "up"}))
+check("按住期间改了编号，松开仍关掉当初那个音符（不留悬挂）",
+      custom.midi.notes[-1] == (60, 15, 0) and 0 not in custom._pad_held,
+      f"最后一条 {custom.midi.notes[-1]}，0 号仍按着：{0 in custom._pad_held}")
+custom.release_all_triggers()
+asyncio.run(custom._on_trigger({"kind": "trigger", "id": 1, "phase": "up"}))
 
 # 丢了"松开"：兜底必须在 1 秒左右补一条 Note Off，否则 DAW 里的 Note 一直挂着
 guarded, _ = handler_with_midi()
@@ -196,6 +271,7 @@ check("独立端口时：推子的 CC 仍然走推子端口",
 
 # ── 4. 端到端：真 aiohttp + 真 WebSocket ─────────────────────────────────────
 async def end_to_end():
+    reset_pad_file()
     h2, _ = handler_with_midi()
     app = web.Application()
     app.router.add_get("/ws", h2.handle)
@@ -245,6 +321,7 @@ asyncio.run(end_to_end())
 # ── 5. PC 端编辑器窗口（真 Tk，与手机同构的 4×2） ─────────────────────────────
 import tkinter as tk  # noqa: E402  (只在窗口测试用得上)
 
+reset_pad_file()
 app = server.BridgeApp()
 try:
     check("设置页默认「面板与推子共用端口」（保持既有行为）",
@@ -289,6 +366,51 @@ try:
           app._pad_layout["pages"][0]["title"] == "轨道颜色"
           and app._pad_tab_btns[0].cget("text") == "轨道颜色",
           f"tab='{app._pad_tab_btns[0].cget('text')}'")
+
+    # 形状：逐格核对行列，确保和手机是同一套 2 列 × 4 行、行优先
+    shape = {slot: (int(w["frame"].grid_info()["row"]), int(w["frame"].grid_info()["column"]))
+             for slot, w in enumerate(app._pad_cells)}
+    check("编辑器是 2 列 × 4 行，且行优先（与手机同构）",
+          shape == {0: (0, 0), 1: (0, 1), 2: (1, 0), 3: (1, 1),
+                    4: (2, 0), 5: (2, 1), 6: (3, 0), 7: (3, 1)},
+          f"{shape}")
+
+    # 音符可编辑：模型 / 格子标签 / pad.json 三处一致
+    app._pad_select(1)
+    app._pad_note_var.set("77")
+    app._pad_edit_note()
+    app._pad_commit()
+    saved_note = json.load(open(server.PAD_PREFS, encoding="utf-8"))
+    check("改音符：模型 / 格子标签 / pad.json 三处一致",
+          app._pad_layout["pages"][0]["cells"][1]["note"] == 77
+          and app._pad_cells[1]["note"].cget("text") == "N77"
+          and saved_note["pages"][0]["cells"][1]["note"] == 77,
+          f"{app._pad_cells[1]['note'].cget('text')}")
+    app._pad_note_var.set("999")
+    app._pad_edit_note()
+    check("非法音符被拒绝、给出提示，且不写进模型",
+          app._pad_layout["pages"][0]["cells"][1]["note"] == 77
+          and "0–127" in app._pad_status_lbl.cget("text"),
+          f"提示：{app._pad_status_lbl.cget('text')}")
+    app._pad_note_var.set("77")
+
+    # 拖动换位：把 winfo_containing 换成确定性桩，避免依赖真实命中测试
+    class _Ev:
+        x_root = 0
+        y_root = 0
+    app._pad_win.winfo_containing = lambda _x, _y: app._pad_cells[2]["label"]
+    text_before = app._pad_layout["pages"][0]["cells"][0]["text"]
+    note_before = app._pad_layout["pages"][0]["cells"][0]["note"]
+    app._pad_drag_start(0)
+    app._pad_drag_motion(_Ev())
+    check("拖动经过某格时落点被记录（界面上高亮它）", app._pad_drop_slot == 2,
+          f"落点 slot={app._pad_drop_slot}")
+    app._pad_drag_end(_Ev())
+    cells_now = app._pad_layout["pages"][0]["cells"]
+    check("松手即交换：源格的按钮整体落到目标格，选中跟着按钮走",
+          cells_now[2]["text"] == text_before and cells_now[2]["note"] == note_before
+          and app._pad_sel == 2,
+          f"0 号格的 '{text_before}'/N{note_before} 现在在第 3 格")
 
     app._pad_add_page()
     check("加页：手机侧会多一个页签，且新页编号从 N44 起",
