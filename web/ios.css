@@ -328,7 +328,14 @@ a { color: var(--blue); text-decoration: none; }
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: var(--card);
+  /* 规则点阵：既是装饰，也是"我现在大概在哪个位置"的参照（用户：纯白有点难看，加点规则的
+     点状美化面板、也方便定位）。点阵**居中排布**，所以面正中正好落在一个点上，
+     那一点就是天然的"回中"地标。断连时的灰底是用 background 简写覆盖的，
+     等于顺手把点阵也收掉（离线 = 一块平的、没有参照的板子）。 */
+  background-color: var(--card);
+  background-image: radial-gradient(circle, rgba(58, 62, 86, 0.28) 1.1px, transparent 1.7px);
+  background-size: 30px 30px;
+  background-position: 50% 50%;
   border-radius: var(--radius-lg);
   box-shadow: inset 0 0 0 1px var(--sep);
   overflow: hidden;

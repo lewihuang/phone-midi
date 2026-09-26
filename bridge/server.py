@@ -33,6 +33,24 @@ def _base_dir() -> Path:
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent
 
+def _icon_path() -> Path:
+    """窗口图标文件：打包后在 `_MEIPASS` 根目录（spec 的 `datas` 放进去的），源码模式在 `bridge/` 下。"""
+    return _base_dir() / "midi-deck.ico"
+
+def apply_window_icon(window) -> None:
+    """把程序图标挂到窗口上。
+
+    **只在 exe 里嵌图标是不够的**：那管的是文件在资源管理器/任务栏里的长相，而窗口**打开之后**
+    的图标由 Tk 自己决定（默认是 Tk 的羽毛）。所以每个窗口（root 与每个 Toplevel）都要
+    `iconbitmap` 一次。缺文件或平台不支持都只是"没图标"，绝不能影响启动。
+    """
+    try:
+        path = _icon_path()
+        if path.exists():
+            window.iconbitmap(default=str(path))
+    except Exception as e:
+        log.warning("设置窗口图标失败：%s", e)
+
 def log_file_path() -> Path:
     """日志落盘的位置（与窗口尺寸、面板布局同一个目录）。
 
@@ -1097,6 +1115,7 @@ class BridgeApp:
         self.root.geometry("480x420")
         self.root.configure(bg=BG)
         self.root.minsize(400, 340)
+        apply_window_icon(self.root)     # 窗口打开后的图标要自己挂（exe 里嵌图标只管文件长相）
         self._server_thread = None
         self._stop_event = None
         self._loop = None
@@ -1149,7 +1168,7 @@ class BridgeApp:
         self._set_geometry(self._standard_spec())
 
         # Header
-        tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
+        tk.Label(self.root, text="MIDI Deck", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
         tk.Label(self.root, text="select midi output", font=FONT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
 
         # Device list
@@ -1304,7 +1323,7 @@ class BridgeApp:
         self._set_geometry(self._standard_spec())
 
         # Header
-        tk.Label(self.root, text="手机MIDI推子", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
+        tk.Label(self.root, text="MIDI Deck", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(20, 4))
 
         ip = _local_ip()
         url = f"{protocol}://{ip}:{port}"
@@ -1573,6 +1592,7 @@ class BridgeApp:
         win.title("快捷键面板 · 编辑")
         win.configure(bg=BG)
         win.geometry("520x820")
+        apply_window_icon(win)      # Toplevel 不会自己继承 root 的图标
         win.minsize(460, 700)
         win.protocol("WM_DELETE_WINDOW", self._close_pad_editor)
         self._pad_body = tk.Frame(win, bg=BG)

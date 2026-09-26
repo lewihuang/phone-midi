@@ -470,6 +470,14 @@ function check(name, ok, detail) {
     /class="xy-marker"/.test(htmlOf('xy')) && /class="xy-h"/.test(htmlOf('xy'))
     && /class="xy-v"/.test(htmlOf('xy')) && !/xy-grid|xy-trail/.test(htmlOf('xy')),
     'Marker + 十字线，没有网格/轨迹');
+  // 用户："纯白稍微有点难看，希望在触摸板上加上一些规则的点状" —— 点阵既是装饰，
+  // 也是"我现在在哪个位置"的参照；**居中排布**，所以面正中正好落在一个点上。
+  const xyCss = fs.readFileSync(web('ios.css'), 'utf8');
+  check('xy: 面板上有规则点阵，而且居中对齐（正中是一个点）',
+    /\.xy-plane\s*\{[^}]*radial-gradient\(circle/.test(xyCss)
+    && /\.xy-plane\s*\{[^}]*background-size:\s*30px 30px/.test(xyCss)
+    && /\.xy-plane\s*\{[^}]*background-position:\s*50% 50%/.test(xyCss),
+    'radial-gradient 点阵，间距 30px，居中');
   check('xy: 未连接时不能拖（灰底 + pointer-events: none）',
     plane.classList.contains('offline')
     && /\.xy-plane\.offline\s*\{[^}]*pointer-events:\s*none/.test(fs.readFileSync(web('ios.css'), 'utf8'))

@@ -102,3 +102,28 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
 
 桌面上指向 `手机推子.exe` 的**快捷方式已失效**（文件名变了）。要么手动重建一个指向
 `bridge/dist/MIDI Deck.exe` 的快捷方式，要么让 agent 生成一个。
+
+---
+
+## 补记（同日）：两处漏改与一处美化
+
+改名当轮漏了两处，用户真机当场看见：
+
+1. **PC 窗口里那行大标题还是"手机MIDI推子"** —— 我只改了**窗口标题栏**（`root.title`）与打包名，
+   漏了窗口内部那个 `tk.Label(text="手机MIDI推子")`（设置页与运行页各一处）。改名脚本按"手机推子"
+   这个串匹配，而这里是"手机MIDI推子"（多两个字母），所以整条被漏掉。
+   **教训**：改名要按"旧名的所有变体"扫（`手机推子` / `手机MIDI推子` / `Phone MIDI Bridge` /
+   `Phone MIDI Controller`），并且**改完要打开窗口看一眼**，别只看 grep 结果。
+
+2. **exe 图标换了，但打开之后的图标没换** —— 这是两件事：
+   - exe 里嵌图标（spec 的 `icon=`）管的是文件在资源管理器/任务栏里的长相；
+   - **窗口打开后的图标由 Tk 自己决定**（默认是 Tk 的羽毛），必须在每个窗口上
+     `iconbitmap(default=…ico)` 一次 —— root 与每个 Toplevel 都要（Toplevel 不会继承）。
+   现在：`apply_window_icon(window)` 统一处理（缺文件/平台不支持只警告，不影响启动），
+   `.spec` 的 `datas` 里加上 `('midi-deck.ico', '.')` 让它跟着进包（`_base_dir()` 在打包后就是
+   `_MEIPASS`，源码模式就是 `bridge/`，两种模式都能找到）。
+   `tests/exe_web_check.py` 的"过期快照"检查也把 ico 列进源文件清单 —— 改了图标同样要求重打包。
+
+3. **X/Y 面板加规则点阵**（用户："纯白稍微有点难看，希望在触摸板上加上一些规则的点状"）：
+   30 px 间距的 `radial-gradient` 圆点，**居中排布**，所以面正中正好落在一个点上（天然的"回中"地标）。
+   只是视觉参照：不吸附、不阻尼。断连时用的 `background` 简写会顺手把点阵收掉（离线 = 一块平的板子）。

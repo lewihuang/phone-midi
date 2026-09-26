@@ -49,9 +49,11 @@ def main():
     # byte comparison below only covers web/ — server.py is compiled into the archive, so a
     # timestamp comparison is the cheap guard that catches it.
     exe_mtime = os.path.getmtime(EXE)
-    sources = [os.path.join(ROOT, 'bridge', 'server.py')]
+    sources = [os.path.join(ROOT, 'bridge', 'server.py'),
+               os.path.join(ROOT, 'bridge', 'midi-deck.ico')]   # 图标也打进包里，改了同样要重打包
     for root, _dirs, files in os.walk(WEB):
         sources += [os.path.join(root, f) for f in files]
+    sources = [p for p in sources if os.path.exists(p)]
     newer = [os.path.relpath(p, ROOT).replace('\\', '/') for p in sources
              if os.path.getmtime(p) > exe_mtime]
     check('exe is newer than every source it bundles',
