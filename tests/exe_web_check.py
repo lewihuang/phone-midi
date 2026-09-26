@@ -29,6 +29,19 @@ def main():
     ar = CArchiveReader(EXE)
     toc = {k.replace('\\', '/'): k for k in ar.toc}
 
+    # "Changed the source but forgot to rebuild" has bitten this project repeatedly, and the
+    # byte comparison below only covers web/ — server.py is compiled into the archive, so a
+    # timestamp comparison is the cheap guard that catches it.
+    exe_mtime = os.path.getmtime(EXE)
+    sources = [os.path.join(ROOT, 'bridge', 'server.py')]
+    for root, _dirs, files in os.walk(WEB):
+        sources += [os.path.join(root, f) for f in files]
+    newer = [os.path.relpath(p, ROOT).replace('\\', '/') for p in sources
+             if os.path.getmtime(p) > exe_mtime]
+    check('exe is newer than every source it bundles',
+          not newer,
+          'stale: rebuild needed (%s)' % ', '.join(newer[:4]) if newer else 'up to date')
+
     local = []
     for root, _dirs, files in os.walk(WEB):
         for f in files:

@@ -245,8 +245,16 @@ class MappingEngine:
 # ── WebSocket Server ────────────────────────────────────────────────────────
 
 class SensorHandler:
-    def __init__(self, engine, midi_out, pb_idle_sec: float = 0.5):
+    def __init__(self, engine, midi_out, pb_idle_sec: float = 0.5, pad_midi=None):
         self.engine = engine; self.midi = midi_out; self._clients = set()
+        # The Shortcut Pad gets its own MIDI output port when one is configured. Why: on the
+        # user's machine the fader's CC1 is reached through "All MIDI Inputs", so the port
+        # cannot be removed from that list — and a port in that list also feeds the instrument
+        # tracks, which are OMNI, so pad Notes would make the instrument play (found on the
+        # real device: note 36 fell outside the key range, 37 upward played notes).
+        # Two ports keep both jobs: fader on the shared port, pad on an isolated one.
+        self.pad_midi = pad_midi or midi_out
+        self.pad_midi_isolated = pad_midi is not None
         self.last_cc_output: list[dict] = []  # for GUI status
         # Dead-man timer for pitch bend. A bend is absolute state in the DAW: if the phone
         # stops talking while it is bent (screen lock, WiFi drop, page closed, browser
@@ -306,7 +314,7 @@ class SensorHandler:
     def pad_note_on(self, trigger_id: int):
         note = pad_note_for(trigger_id)
         try:
-            self.midi.send_note(note, PAD_CHANNEL, 127)
+            self.pad_midi.send_note(note, PAD_CHANNEL, 127)
         except Exception as e:
             log.warning("快捷键触发失败（note %d）：%s", note, e)
             return
@@ -318,7 +326,7 @@ class SensorHandler:
         tid = int(trigger_id)
         if tid not in self._pad_held: return False
         del self._pad_held[tid]
-        try: self.midi.send_note(pad_note_for(tid), PAD_CHANNEL, 0)
+        try: self.pad_midi.send_note(pad_note_for(tid), PAD_CHANNEL, 0)
         except Exception as e: log.warning("快捷键松开失败（note %d）：%s", pad_note_for(tid), e)
         return True
 
@@ -654,6 +662,8 @@ PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在�
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
 PAD_DEFAULT_TITLE = "快捷键面板"
 PAD_TEXT_MAX = 24
+# 界面上"面板与推子共用端口"的选项文字（共用会让音源轨跟着弹音，见 PAD_PREFS 上方的说明）
+PAD_SAME_PORT = "（与推子相同）"
 # 固定调色板：全部是深色，白字可读。颜色无语义，纯粹为了一眼认出功能（spec D11）。
 PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
               "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
@@ -818,6 +828,9 @@ class BridgeApp:
         self._busy = None            # 'start' | 'stop' while a worker is doing the work
         self._start_result = None
         self._stop_done = False
+        self._pad_midi = None        # 面板专用 MIDI 端口（未配置时为 None，即与推子共用）
+        self._pad_used = None
+        self._pad_warn = None
         self._ssl_pair = None        # TLS context is built once per run, not per START
         self._win_prefs = load_window_prefs()   # sizes remembered from the last run
         # Same dead-man timer as the CLI: a phone that goes quiet must not leave the DAW bent.
@@ -891,6 +904,21 @@ class BridgeApp:
                               insertbackground=FG, relief=tk.FLAT, width=6, justify=tk.CENTER,
                               highlightbackground=BORDER, highlightthickness=1)
         port_entry.pack(side=tk.LEFT, padx=(8, 0))
+
+        # 面板端口：快捷键面板可以用一个**独立的** MIDI 输出端口。
+        # 为什么需要：真机上推子的 CC1 是靠 "All MIDI Inputs" 送进 DAW 的，所以那个端口不能从
+        # 该名单里摘掉；而名单里的端口同时喂音源轨（音源是 OMNI），面板的音符就会让音源弹音。
+        # 分开两个端口，两件事各自都成立。
+        pad_row = tk.Frame(self.root, bg=BG)
+        pad_row.pack(fill=tk.X, padx=20, pady=(6, 0))
+        tk.Label(pad_row, text="面板端口", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(side=tk.LEFT)
+        self._pad_port_var = tk.StringVar(value=PAD_SAME_PORT)
+        names = [PAD_SAME_PORT] + [n for _pid, n in ports]
+        self._pad_port_box = ttk.Combobox(pad_row, textvariable=self._pad_port_var, values=names,
+                                          state="readonly", font=FONT_HINT, width=24)
+        self._pad_port_box.pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(pad_row, text="（建议单开一个 loopMIDI 端口，否则音源轨会跟着弹音）",
+                 font=("Consolas", 8), bg=BG, fg=FG_DIM).pack(side=tk.LEFT, padx=(8, 0))
 
         # Buttons
         btn_frame = tk.Frame(self.root, bg=BG)
@@ -998,7 +1026,18 @@ class BridgeApp:
         self._status_clients = tk.Label(card, text="clients: 0", font=FONT, bg=SURFACE, fg=FG, anchor="w")
         self._status_clients.pack(fill=tk.X, padx=12, pady=(0, 2))
         self._status_cc = tk.Label(card, text="cc: --", font=FONT, bg=SURFACE, fg=FG_DIM, anchor="w")
-        self._status_cc.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self._status_cc.pack(fill=tk.X, padx=12, pady=(0, 2))
+
+        # 面板端口一行：分开了就是绿的，共用则明确写清代价（否则用户只会看到"音源莫名弹音"）
+        if getattr(self, "_pad_used", None):
+            pad_text, pad_fg = f"面板端口: {self._pad_used}（与推子分离）", GREEN
+        elif getattr(self, "_pad_warn", None):
+            pad_text, pad_fg = self._pad_warn, AMBER
+        else:
+            pad_text, pad_fg = "面板端口: 与推子相同（音源轨可能跟着弹音）", AMBER
+        self._status_pad = tk.Label(card, text=pad_text, font=FONT_HINT, bg=SURFACE, fg=pad_fg,
+                                    anchor="w", wraplength=420, justify="left")
+        self._status_pad.pack(fill=tk.X, padx=12, pady=(0, 10))
 
         # Active indicator
         self._indicator = tk.Canvas(self.root, width=10, height=10, bg=BG, highlightthickness=0)
@@ -1469,9 +1508,16 @@ class BridgeApp:
         for w in self.root.winfo_children(): w.destroy()
         for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
                      "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
-                     "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn"):
+                     "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn",
+                     "_status_pad", "_pad_port_var", "_pad_port_box"):
             if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
+
+    def _pad_selection(self):
+        """面板端口的选择：None = 与推子共用（默认），否则是一个端口名。"""
+        var = getattr(self, "_pad_port_var", None)
+        name = var.get() if var is not None else PAD_SAME_PORT
+        return None if name in ("", PAD_SAME_PORT) else name
 
     def _on_start(self):
         sel = self._tree.selection()
@@ -1484,7 +1530,7 @@ class BridgeApp:
         device_id = self._port_ids[idx]
         device_name = self._tree.item(sel[0], "values")[0]
         port = int(self._port_var.get() or "8765")
-        self._start_server(device_id, device_name, port)
+        self._start_server(device_id, device_name, port, pad_name=self._pad_selection())
 
     def _ssl_for(self, base_dir):
         """Build the TLS context once per run.
@@ -1504,7 +1550,7 @@ class BridgeApp:
         self._ssl_pair = (context, protocol)
         return self._ssl_pair
 
-    def _start_server(self, device_id, device_name, port):
+    def _start_server(self, device_id, device_name, port, pad_name=None):
         """Start everything on a worker thread: this window must never stop responding.
 
         Measured before this change: START blocked the UI thread for ~0.7 s (cert work) and
@@ -1523,10 +1569,21 @@ class BridgeApp:
                 self._start_result = {"ok": False, "msg": f"无法打开 MIDI 端口：{e}"}; return
             except Exception as e:
                 self._start_result = {"ok": False, "msg": f"无法打开 MIDI 端口：{e}"}; return
+            # The pad's own port. A failure here must not stop the Bridge: the pad falls back to
+            # the fader port and the running view says so (a silently useless pad would be worse).
+            pad_midi, pad_used, pad_warn = None, None, None
+            if pad_name:
+                try:
+                    pad_midi = WinMidi(); pad_midi.open(name=pad_name); pad_used = pad_name
+                except Exception as e:
+                    pad_midi = None
+                    pad_warn = f"面板端口「{pad_name}」打不开（{e}），面板暂用推子端口"
+                    log.warning("%s", pad_warn)
             try:
                 base_dir = _base_dir()
                 engine = MappingEngine(str(base_dir / "config" / "default.json"))
-                handler = SensorHandler(engine, midi, pb_idle_sec=self._pb_idle_sec)
+                handler = SensorHandler(engine, midi, pb_idle_sec=self._pb_idle_sec,
+                                        pad_midi=pad_midi)
                 ssl_context, protocol = self._ssl_for(base_dir)
                 app = web.Application()
                 app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
@@ -1543,6 +1600,9 @@ class BridgeApp:
             except Exception as e:
                 try: midi.close()
                 except Exception: pass
+                if pad_midi is not None:
+                    try: pad_midi.close()
+                    except Exception: pass
                 msg = str(e)
                 if isinstance(e, OSError) and _port_in_use("0.0.0.0", port):
                     msg = (f"端口 {port} 已被占用：已经有一个「手机推子」在运行，"
@@ -1550,11 +1610,14 @@ class BridgeApp:
                 self._start_result = {"ok": False, "msg": msg}; return
 
             log.info("Starting on %s://0.0.0.0:%d", protocol, port)
+            if pad_used: log.info("面板 MIDI 端口：%s（与推子分离）", pad_used)
+            elif pad_warn: log.warning("%s", pad_warn)
             thread = threading.Thread(target=self._serve, args=(app, sock, ssl_context,
                                                                handler), daemon=True)
             self._start_result = {"ok": True, "midi": midi, "handler": handler, "sock": sock,
                                   "thread": thread, "protocol": protocol,
-                                  "name": device_name, "port": port}
+                                  "name": device_name, "port": port,
+                                  "pad_midi": pad_midi, "pad_used": pad_used, "pad_warn": pad_warn}
             thread.start()
 
         threading.Thread(target=_work, daemon=True).start()
@@ -1592,6 +1655,10 @@ class BridgeApp:
             return
         self._midi, self._handler = res["midi"], res["handler"]
         self._sock, self._server_thread = res["sock"], res["thread"]
+        # 面板端口的状态要显示出来：共用端口时音源轨会跟着弹音，用户必须看得见这件事
+        self._pad_midi = res.get("pad_midi")
+        self._pad_used = res.get("pad_used")
+        self._pad_warn = res.get("pad_warn")
         self._build_running(res["name"], res["port"], res["protocol"])
 
     def _on_stop(self):
@@ -1599,8 +1666,9 @@ class BridgeApp:
         if self._busy: return
         loop, runner, sock, thread = self._loop, self._runner, self._sock, self._server_thread
         midi, handler = self._midi, self._handler
+        pad_midi = self._pad_midi
         self._loop = self._runner = self._sock = self._server_thread = None
-        self._midi = self._handler = None
+        self._midi = self._handler = self._pad_midi = None
         self._busy = "stop"
         self._stop_done = False
         self._set_busy("正在停止…")
@@ -1631,9 +1699,10 @@ class BridgeApp:
                     log.warning("等待服务器停止：%s", e)
             if thread and thread.is_alive():
                 thread.join(timeout=3)
-            if midi:
-                try: midi.close()
-                except Exception: pass
+            for m in (midi, pad_midi):
+                if m:
+                    try: m.close()
+                    except Exception: pass
             self._stop_done = True
 
         threading.Thread(target=_work, daemon=True).start()
@@ -1680,6 +1749,8 @@ def parse_args():
     p.add_argument("--no-gui", action="store_true", help="CLI mode (no GUI)")
     p.add_argument("--midi-device", type=int, default=None)
     p.add_argument("--midi-name", type=str, default=None)
+    p.add_argument("--pad-name", type=str, default=None,
+                   help="快捷键面板专用的 MIDI 输出端口名（省略则与推子共用；共用时音源轨会跟着弹音）")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--config", default="config/default.json")
@@ -1697,8 +1768,19 @@ def _cli_mode(args):
         log.info("MIDI: [%d] %s", midi.device_id, WinMidi.device_name(midi.device_id))
     except WinMidiError as e: log.error("MIDI: %s", e); sys.exit(1)
 
+    # --pad-name 给快捷键面板一个独立端口；打不开就退回推子端口并告警（不阻断启动）
+    pad_midi = None
+    if getattr(args, "pad_name", None):
+        try:
+            pad_midi = WinMidi(); pad_midi.open(name=args.pad_name)
+            log.info("面板 MIDI 端口：%s（与推子分离）", args.pad_name)
+        except Exception as e:
+            pad_midi = None
+            log.warning("面板端口「%s」打不开（%s），面板暂用推子端口；"
+                        "共用端口时音源轨会跟着弹音", args.pad_name, e)
+
     engine = MappingEngine(str(config_path))
-    handler = SensorHandler(engine, midi, pb_idle_sec=args.pb_idle_ms / 1000.0)
+    handler = SensorHandler(engine, midi, pb_idle_sec=args.pb_idle_ms / 1000.0, pad_midi=pad_midi)
     app = web.Application()
     app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
     app.router.add_get("/ws", handler.handle); app.router.add_get("/status", handle_status)

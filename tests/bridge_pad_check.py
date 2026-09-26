@@ -40,7 +40,14 @@ def check(name, ok, detail=""):
 tmpdir = tempfile.mkdtemp(prefix="pad-check-")
 server.PAD_PREFS = __import__("pathlib").Path(tmpdir) / "pad.json"
 
-CFG = {"preset_name": "pad-check", "mappings": []}
+CFG = {"preset_name": "pad-check", "mappings": [{
+    # shaped like the shipped default: the fader's CC1, which must keep using the fader port
+    "source": {"type": "sensor", "sensor": "rotation_vector", "axis": "fused_lift"},
+    "target": {"type": "cc", "cc": 1, "channel": 0},
+    "curve": {"type": "linear", "params": {}},
+    "range": {"in_min": 0.0, "in_max": 1.0, "out_min": 0, "out_max": 127, "dead_zone": 0.0},
+    "smoothing": {"type": "ema", "alpha": 1.0},
+}]}
 cfg_path = os.path.join(tmpdir, "cfg.json")
 with open(cfg_path, "w", encoding="utf-8") as f:
     json.dump(CFG, f)
@@ -61,9 +68,11 @@ class FakeMidi:
         pass
 
 
-def handler_with_midi():
+def handler_with_midi(pad_isolated=False):
     eng = server.MappingEngine(cfg_path)
-    return server.SensorHandler(eng, FakeMidi(), pb_idle_sec=0), eng
+    midi = FakeMidi()
+    pad = FakeMidi() if pad_isolated else None
+    return server.SensorHandler(eng, midi, pb_idle_sec=0, pad_midi=pad), eng
 
 
 # ── 1. 编号公式与越界 ────────────────────────────────────────────────────────
@@ -155,6 +164,36 @@ try:
 finally:
     server.PAD_HOLD_GUARD_SEC = real_guard
 
+# ── 3b. 面板专用端口：音符绝不能走推子那个端口 ────────────────────────────────
+# 真机上暴露的问题：推子的 CC1 靠 All MIDI Inputs 进 DAW，所以那个端口不能从该名单摘掉，
+# 而名单里的端口同时喂音源轨（OMNI）——面板的音符会让音源跟着弹音。分开两个端口才两全。
+iso, iso_eng = handler_with_midi(pad_isolated=True)
+iso.pad_midi.notes = []                     # 断言用：只关心面板端口收到了什么
+asyncio.run(iso._on_trigger({"kind": "trigger", "id": 2, "phase": "down"}))
+check("独立端口时：音符只出现在面板端口上",
+      iso.pad_midi.notes == [(38, 15, 127)] and iso.midi.notes == [],
+      f"面板端口 {iso.pad_midi.notes}，推子端口 {iso.midi.notes}")
+asyncio.run(iso._on_trigger({"kind": "trigger", "id": 2, "phase": "up"}))
+check("独立端口时：松开也只走面板端口",
+      iso.pad_midi.notes[-1] == (38, 15, 0) and iso.midi.notes == [],
+      f"面板端口 {iso.pad_midi.notes}")
+check("独立端口时：pad_midi_isolated 为真（窗口据此显示绿色的端口行）",
+      iso.pad_midi_isolated is True and h.pad_midi_isolated is False,
+      "isolated=True / shared=False")
+
+iso2, _ = handler_with_midi(pad_isolated=True)
+iso_eng.reset()
+# 推子那条路必须一点没变：CC 仍然走原来的端口
+cc_out = iso_eng.process("rotation_vector", "fused_lift", 0.5)
+sent_cc = []
+if cc_out:
+    out_kind, cc, ch, val, _norm = cc_out[0]
+    iso2.midi.send_cc(cc, ch, val)
+    sent_cc = [(cc, ch, val)]
+check("独立端口时：推子的 CC 仍然走推子端口",
+      cc_out and iso2.pad_midi.notes == [] and iso2.midi.cc == sent_cc,
+      f"推子端口 {iso2.midi.cc}，面板端口 {iso2.pad_midi.notes}")
+
 # ── 4. 端到端：真 aiohttp + 真 WebSocket ─────────────────────────────────────
 async def end_to_end():
     h2, _ = handler_with_midi()
@@ -208,6 +247,20 @@ import tkinter as tk  # noqa: E402  (只在窗口测试用得上)
 
 app = server.BridgeApp()
 try:
+    check("设置页默认「面板与推子共用端口」（保持既有行为）",
+          app._pad_selection() is None
+          and server.PAD_SAME_PORT in app._pad_port_box.cget("values"),
+          f"选择框里有 {len(app._pad_port_box.cget('values'))} 个选项，默认 = 共用")
+
+    app._pad_port_var.set(server.PAD_SAME_PORT)
+    check("选「与推子相同」解析为 None（不额外开端口）", app._pad_selection() is None, "None")
+    if len(app._pad_port_box.cget("values")) > 1:
+        first_port = app._pad_port_box.cget("values")[1]
+        app._pad_port_var.set(first_port)
+        check("选了具体端口就按端口名传给服务器",
+              app._pad_selection() == first_port, f"'{first_port}'")
+    app._pad_port_var.set(server.PAD_SAME_PORT)
+
     app._open_pad_editor()
     app.root.update_idletasks()
     check("编辑器打开后有 8 个格子，编号 N36…N43",
