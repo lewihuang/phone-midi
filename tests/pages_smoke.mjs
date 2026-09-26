@@ -169,6 +169,16 @@ function check(name, ok, detail) {
   check('latency page: measures the new chain instead',
     /id="driftMeasured"/.test(latHtml) && !!lat.win.document.getElementById('driftMeasured'),
     'accelerometer-vs-attitude drift readout present');
+  // 震动这条在真机上排查过一轮（安卓 Edge 上没感觉到），所以要有一处能直接读出"是没 API 还是被系统压掉"。
+  const vibApi = lat.win.document.getElementById('vibApi');
+  check('latency page: reports whether the device has the vibration API',
+    /可用/.test(vibApi.textContent),
+    `桩里 navigator.vibrate 存在 → ${vibApi.textContent}`);
+  lat.win.document.getElementById('btnVib').dispatch('click', {});
+  const vibResult = lat.win.document.getElementById('vibResult').textContent;
+  check('latency page: the vibrate self-test says what the return value means',
+    /已接受/.test(vibResult) && /静音/.test(vibResult),
+    vibResult.slice(0, 60) + '…');
 }
 
 // ── the shortcut pad page (spec/shortcut-pad.md, ADR 0004) ───────────────────
@@ -290,6 +300,10 @@ function check(name, ok, detail) {
     const [r, g, b] = [0, 2, 4].map((i) => parseInt(c.substr(i, 2), 16));
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
   };
+  const rgb = (hex) => {
+    const c = hex.replace('#', '');
+    return [0, 2, 4].map((i) => parseInt(c.substr(i, 2), 16));
+  };
   const bg = (css.match(/--bg:\s*(#[0-9a-fA-F]{3,6})/) || [])[1] || '';
   check('theme: ios.css has no dark-mode branch',
     !/prefers-color-scheme/.test(css), '只有浅色一套，不跟随系统深色');
@@ -297,10 +311,23 @@ function check(name, ok, detail) {
     !!bg && luma(bg) > 0.8, `--bg ${bg} luma ${bg ? luma(bg).toFixed(2) : 'n/a'}`);
   check('theme: colour schemes are pinned to light',
     /color-scheme:\s*light/.test(css), '表单控件/滚动条不跟着系统走');
+  // 用户："整体配色饱和度为零有点丑，给整体色调加一点点蓝，只要一点点一点点一点点"
+  // 纯中性灰（蓝=红）就是那个"饱和度为零"，所以灰阶必须**有一点点蓝**，但只能是"一点点"。
+  const bgRgb = bg ? rgb(bg) : [0, 0, 0];
+  const fill = (css.match(/--fill:\s*(#[0-9a-fA-F]{3,6})/) || [])[1] || '';
+  const fillRgb = fill ? rgb(fill) : [0, 0, 0];
+  check('theme: the greys carry a slight blue cast (a little, not a lot)',
+    bgRgb[2] > bgRgb[0] && fillRgb[2] > fillRgb[0]
+    && (bgRgb[2] - bgRgb[0]) <= 16 && (fillRgb[2] - fillRgb[0]) <= 20,
+    `--bg 蓝-红=${bgRgb[2] - bgRgb[0]}，--fill 蓝-红=${fillRgb[2] - fillRgb[0]}（0 = 纯中性灰，太大就是紫）`);
   check('theme: a pressed cell gets darker, not lighter',
     /\.cell\.pressed\s*\{[^}]*brightness\((0?\.\d+)\)/.test(css) &&
     parseFloat(css.match(/\.cell\.pressed\s*\{[^}]*brightness\((0?\.\d+)\)/)[1]) < 1,
     '浅色填充再提亮会贴到白色，按下去等于没反馈');
+  // 用户："点击时在按钮边上出现的高对比度边框非常丑，删了" —— 按下与松手都不画描边。
+  check('theme: no ring/border is drawn on press or release',
+    !/\.cell\.pressed\s*\{[^}]*box-shadow/.test(css) && !/\.cell\.fired\s*\{[^}]*box-shadow/.test(css),
+    '按下的证据只有尺寸 + 明暗，不加形状');
 
   const tuned = ['index', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
   const straight = tuned.filter((p) => !/ios\.css/.test(htmlOf(p)));

@@ -703,8 +703,9 @@ PAD_TEXT_MAX = 24
 PAD_COLORS = ("#ffffff", "#007aff", "#34c759", "#ff9500",
               "#ff3b30", "#5e5ce6", "#ff2d55", "#30b0c7")
 PAD_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-# 格子上的字：浅底配深字、深底配白字（阈值 0.6 是"中间偏亮"那一档）
-PAD_INK_DARK = "#1c1c1e"
+# 格子上的字：浅底配深字、深底配白字（阈值 0.6 是"中间偏亮"那一档）。
+# 深字与页面令牌一样略带蓝（--label #1c1e26），这样白键上的字和整页是同一个色系。
+PAD_INK_DARK = "#1c1e26"
 PAD_INK_LIGHT = "#ffffff"
 
 def pad_color_valid(color) -> bool:

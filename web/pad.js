@@ -24,7 +24,7 @@
   // default and the light page. Earlier defaults (dark navy, then mid grey) were leftovers from
   // the dark theme.
   const DEFAULT_COLOR = '#ffffff';
-  const DEFAULT_INK = '#1c1c1e';
+  const DEFAULT_INK = '#1c1e26';
   // Haptics: a tap confirms itself in the hand, not only on the screen. Android/Chrome vibrate;
   // iOS Safari has no Vibration API at all, so this is "buzz if you can" — never required.
   const HAPTIC_MS = 10;

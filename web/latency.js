@@ -49,6 +49,11 @@
 
   const elVerdict = document.getElementById('verdict');
 
+  const elVibApi = document.getElementById('vibApi');
+  const elVibSecure = document.getElementById('vibSecure');
+  const elVibResult = document.getElementById('vibResult');
+  const elBtnVib = document.getElementById('btnVib');
+
   let running = false;
   let anchors = null;
   let anchorSource = '—';
@@ -286,6 +291,41 @@
     return perCall;
   }
 
+  // ── ⑥ haptics: can this device confirm a press by feel? ────────────────────
+  //
+  // The pad page buzzes on every press and page switch. "No buzz" has several very different
+  // causes and they are indistinguishable by feel, so this reports the one fact that separates
+  // them: whether the API exists at all, and what vibrate() *returned*.
+  //   no API  -> iOS Safari (no Vibration API at all), or a browser that dropped it
+  //   false   -> the call was refused (page not visible / no user gesture)
+  //   true    -> accepted; a silent phone means the *system* muted it (silent / DND /
+  //              vibration switched off) or there is no motor — see MDN's vibrate() notes
+  const vibSupported = typeof navigator.vibrate === 'function';
+
+  function reportVibrationApi() {
+    elVibApi.textContent = vibSupported ? '可用' : '不可用（本浏览器没有 navigator.vibrate）';
+    setVerdictClass(elVibApi, vibSupported ? 'good' : 'bad');
+    elVibSecure.textContent = window.isSecureContext ? '是' : '否（HTTP：不影响震动，但会影响唤醒锁等）';
+  }
+
+  function testVibration() {
+    if (!vibSupported) {
+      elVibResult.textContent = '本浏览器没有这个 API —— iOS Safari 就属于这一类（网页拿不到 iPhone 的马达）';
+      setVerdictClass(elVibResult, 'bad');
+      return;
+    }
+    let accepted;
+    try {
+      accepted = navigator.vibrate(200);
+    } catch (e) {
+      accepted = false;
+    }
+    elVibResult.textContent = accepted
+      ? '调用已接受但手上没感觉 → 系统层面压掉了（静音/勿扰/系统里关了振动），或本机无马达'
+      : '调用被拒（false）→ 多为页面不可见或没有用户手势，可在页面可见时再点一次';
+    setVerdictClass(elVibResult, accepted ? 'warn' : 'bad');
+  }
+
   // ── tuning UI ─────────────────────────────────────────────────────────────
 
   // ── periodic UI refresh ───────────────────────────────────────────────────
@@ -363,7 +403,7 @@
 
     const totalTxt = parts.length ? `<br>估算端到端 ≈ <b>${total.toFixed(0)} ms</b>（${parts.join(' + ')}）` : '';
     elVerdict.innerHTML = head + totalTxt
-      + '<br><span style="color:#64748b">参考：手感「无延迟」阈值约 50 ms 以内；100 ms 以上明显可感。</span>';
+      + '<br><span class="dim">参考：手感「无延迟」阈值约 50 ms 以内；100 ms 以上明显可感。</span>';
   }
 
   let rttResult = null;
@@ -402,6 +442,8 @@
   elBtnStart.addEventListener('click', start);
   elBtnStorage.addEventListener('click', measureStorage);
   elBtnRtt.addEventListener('click', () => { measureRtt().then((r) => { rttResult = r; }); });
+  elBtnVib.addEventListener('click', testVibration);
+  reportVibrationApi();       // 一进页面就报，不用点任何东西
 
   if (!F) {
     showError('fusion.js 未加载，请刷新页面');
