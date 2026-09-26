@@ -6,6 +6,7 @@ import { web } from './_paths.mjs';
 
 const pages = {
   home: { html: 'index.html', scripts: [] },
+  xy: { html: 'xy.html', scripts: ['xy.js'] },
   fader: { html: 'fader.html', scripts: ['fusion.js', 'vibrato.js', 'app.js'] },
   lab: { html: 'vibrato-lab.html', scripts: ['vibrato.js', 'vibrato-lab.js'] },
   latency: { html: 'latency.html', scripts: ['fusion.js', 'latency.js'] },
@@ -24,9 +25,15 @@ function makeDom(page) {
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
   const profile = (html.match(/data-profile="([^"]+)"/) || [])[1] || 'lift';
   const nodes = {};
+  // 控件面上的位置是 CSS 变量驱动的（--mx/--my），所以桩里的 style 要支持 setProperty
+  const styleProto = {
+    _v: {},
+    setProperty(k, v) { this._v[k] = String(v); },
+    getPropertyValue(k) { return this._v[k] || ''; },
+  };
   const mk = (id, tag) => {
     const node = {
-      id, tagName: tag || 'DIV', style: {}, dataset: {}, children: [],
+      id, tagName: tag || 'DIV', style: Object.create(styleProto), dataset: {}, children: [],
       classList: {
         _s: new Set(),
         add(c) { this._s.add(c); },
@@ -43,6 +50,8 @@ function makeDom(page) {
       querySelectorAll() { return []; },
       setAttribute() {}, getAttribute() { return null; }, requestAnimationFrame() {},
       setPointerCapture() {}, releasePointerCapture() {}, focus() {},
+      // X/Y Pad 要按触点算位置：给一个固定 300×300 的面（正方形，和真实布局一致）
+      getBoundingClientRect() { return { left: 0, top: 0, right: 300, bottom: 300, width: 300, height: 300 }; },
     };
     let text = '';
     // A real DOM clears child nodes when textContent is assigned, and pad.js relies on that
@@ -176,6 +185,15 @@ function check(name, ok, detail) {
   check('home: 首页只是模块列表，不加载任何脚本',
     files.home.length === 0 && Object.keys(home.win).length > 0,
     `${htmlOf('home').includes('/fader.html') ? '有' : '缺'} Digital Fader 入口 / ${htmlOf('home').includes('/pad.html') ? '有' : '缺'} Shortcut Pad 入口`);
+  // 三个模块都必须能从首页点到（少一个就是"功能做了但进不去"）
+  const homeHtml = htmlOf('home');
+  const wanted = [['Digital Fader', '/fader.html'], ['Shortcut Pad', '/pad.html'], ['X/Y Pad', '/xy.html']];
+  const missing = wanted.filter(([name, href]) =>
+    !new RegExp(`<a class="module" href="${href.replace('/', '\\/')}">\\s*<span class="m-name">${name.replace('/', '\\/')}</span>`)
+      .test(homeHtml));
+  check('home: 三个模块都在首页，卡片只有名字（没有说明文字）',
+    missing.length === 0 && !/m-desc/.test(homeHtml),
+    missing.length ? `缺：${missing.map((m) => m[0]).join(', ')}` : wanted.map((w) => w[0]).join(' / '));
 }
 
 {
@@ -367,7 +385,7 @@ function check(name, ok, detail) {
     !/\.cell\.pressed\s*\{[^}]*box-shadow/.test(css) && !/\.cell\.fired\s*\{[^}]*box-shadow/.test(css),
     '按下的证据只有尺寸 + 明暗，不加形状');
 
-  const tuned = ['home', 'fader', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
+  const tuned = ['home', 'xy', 'fader', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
   const straight = tuned.filter((p) => !/ios\.css/.test(htmlOf(p)));
   check('theme: every phone page uses the shared stylesheet',
     straight.length === 0, straight.length ? `missing on ${straight.join(',')}` : `${tuned.length} pages`);
@@ -426,6 +444,141 @@ function check(name, ok, detail) {
   check('切模式时地址栏跟的是推子页（刷新不会跳回首页）',
     /history\.replaceState\(null, '', '\/fader\.html\?mode='/.test(fs.readFileSync(web('app.js'), 'utf8')),
     "app.js: replaceState('/fader.html?mode=' + modeId)");
+}
+
+// ── X/Y Pad（docs/spec/xy-pad.md） ──────────────────────────────────────────
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { win, sockets, nodes } = loadPage('xy');
+  const plane = win.document.getElementById('plane');
+  const readout = win.document.getElementById('readout');
+  const ws = sockets[0];
+
+  const xys = () => ws.sent.filter((m) => m.kind === 'xy');
+  // 300×300 的桩面：clientX 0→左(0)，300→右(127)；clientY 0→上(127)，300→下(0)
+  const touch = (type, x, y, pointerId = 1) =>
+    plane.dispatch(type, { pointerId, clientX: x, clientY: y, preventDefault() {} });
+
+  check('xy: 正方形控制面（aspect-ratio + 一个面元素）',
+    /class="xy-plane[^"]*" id="plane"/.test(htmlOf('xy'))
+    && /\.xy-plane\s*\{[^}]*aspect-ratio:\s*1/.test(fs.readFileSync(web('ios.css'), 'utf8')),
+    'aspect-ratio: 1 = 两轴等比例');
+  check('xy: 有回中按钮、冻结按钮、两个 CC 输入与通道选择',
+    !!nodes.btnCenter || !!win.document.getElementById('btnCenter'),
+    '回中 / 冻结 / X CC / Y CC / Ch 都在');
+  check('xy: 面里有 Position Marker 与十字准线（不做网格、不做轨迹）',
+    /class="xy-marker"/.test(htmlOf('xy')) && /class="xy-h"/.test(htmlOf('xy'))
+    && /class="xy-v"/.test(htmlOf('xy')) && !/xy-grid|xy-trail/.test(htmlOf('xy')),
+    'Marker + 十字线，没有网格/轨迹');
+  check('xy: 未连接时不能拖（灰底 + pointer-events: none）',
+    plane.classList.contains('offline')
+    && /\.xy-plane\.offline\s*\{[^}]*pointer-events:\s*none/.test(fs.readFileSync(web('ios.css'), 'utf8'))
+    && readout.textContent === '未连接',
+    `readout="${readout.textContent}"`);
+
+  // 连上，但**还没碰过**：一个值都不许发（打开页面就发中心值会静默改掉插件里的音色位置）
+  ws.readyState = 1; ws.onopen();
+  check('xy: 连上之后、碰之前，一条值都不发', xys().length === 0, `${xys().length} 条`);
+  check('xy: 未触碰时读数是"未定"（X — · Y —），面上是虚线环',
+    readout.textContent === 'X — · Y —'
+    // 桩不解析 HTML 上的 class，所以"虚线环"这条按标记断言：页面初始就带 unset，CSS 里也有对应样式
+    && /class="xy-plane unset"/.test(htmlOf('xy'))
+    && /\.xy-plane\.unset \.xy-marker\s*\{[^}]*dashed/.test(fs.readFileSync(web('ios.css'), 'utf8')),
+    `readout="${readout.textContent}"`);
+
+  // 落点（Landing）：中心 → 触点，40 ms 内插过去，沿途照发
+  touch('pointerdown', 300, 0);
+  await sleep(90);
+  const landing = xys();
+  check('xy: 落点后开始发送，终点就是触点（右上角 = 127/127）',
+    landing.length >= 1 && landing.at(-1).x === 127 && landing.at(-1).y === 127
+    && landing.at(-1).cc_x === 20 && landing.at(-1).cc_y === 21,
+    `${landing.length} 条，最后一条 ${JSON.stringify(landing.at(-1))}`);
+  check('xy: 落点是补间而不是跳变（中间有过渡值）',
+    landing.length >= 2 && landing.some((m) => m.x > 0 && m.x < 127),
+    `x 序列 ${landing.map((m) => m.x).join(',')}`);
+  check('xy: 标记跟到触点上（--mx/--my 是 JS 每帧写的）',
+    plane.style.getPropertyValue('--mx') === '100.000%'
+    && plane.style.getPropertyValue('--my') === '0.000%',
+    `${plane.style.getPropertyValue('--mx')} / ${plane.style.getPropertyValue('--my')}`);
+
+  // Drag：跟手（每一档都发，不插帧）
+  const beforeDrag = xys().length;
+  touch('pointermove', 150, 150);
+  await sleep(8);
+  touch('pointermove', 60, 240);
+  await sleep(8);
+  const drag = xys().slice(beforeDrag);
+  // 300×300 的桩面：x=150 → 127×0.5 = 63.5 → 64；y=150 → 1−0.5 → 63.5 → 64
+  //                    x=60  → 127×0.2 = 25.4 → 25；y=240 → 1−0.8 → 25.4 → 25
+  check('xy: Drag 直接跟手（两次移动两条消息，中间没有插帧）',
+    drag.length === 2 && drag[0].x === 64 && drag[0].y === 64
+    && drag[1].x === 25 && drag[1].y === 25,
+    `${JSON.stringify(drag)}`);
+
+  // 抬起：绝对 + 保持，什么都不发
+  const beforeUp = xys().length;
+  touch('pointerup', 60, 240);
+  await sleep(20);
+  check('xy: 抬起不产生任何消息（值留在那儿，没有归零/归中）',
+    xys().length === beforeUp, `${xys().length - beforeUp} 条`);
+
+  // 第二根手指：不夺权
+  touch('pointerdown', 300, 300, 1);
+  await sleep(60);
+  const afterA = xys().at(-1);
+  touch('pointerdown', 0, 0, 2);          // 第二根落在左下角
+  await sleep(60);
+  check('xy: 第二根手指落下不夺权（位置不动）',
+    xys().at(-1).x === afterA.x && xys().at(-1).y === afterA.y
+    && plane.classList.contains('pressed'),
+    `A 停在 ${afterA.x}/${afterA.y}，最后一条 ${xys().at(-1).x}/${xys().at(-1).y}`);
+  touch('pointerup', 300, 300, 1);
+
+  // 回中
+  const beforeCenter = xys().length;
+  win.document.getElementById('btnCenter').dispatch('click', {});
+  await sleep(90);
+  check('xy: 回中把 Position 送回正中并发出中心值（64/64，走同一条补间）',
+    xys().at(-1).x === 64 && xys().at(-1).y === 64 && xys().length > beforeCenter,
+    `${xys().length - beforeCenter} 条，最后 ${xys().at(-1).x}/${xys().at(-1).y}`);
+
+  // 冻结：可以摆位但不发送；解冻发一次
+  win.document.getElementById('btnFreeze').dispatch('click', {});
+  check('xy: 冻结后按钮变成"已冻结 · 点此恢复"，面加上了标记',
+    /已冻结/.test(win.document.getElementById('btnFreeze').textContent)
+    && plane.classList.contains('frozen'),
+    win.document.getElementById('btnFreeze').textContent);
+  const beforeFrozen = xys().length;
+  touch('pointerdown', 300, 0);
+  await sleep(80);
+  touch('pointerup', 300, 0);
+  check('xy: 冻结期间拖动不发任何值（但 Marker 照样跟着走）',
+    xys().length === beforeFrozen && readout.textContent.includes('已冻结'),
+    `${xys().length - beforeFrozen} 条，readout="${readout.textContent}"`);
+  win.document.getElementById('btnFreeze').dispatch('click', {});
+  await sleep(90);
+  check('xy: 解冻时把 Marker 的位置发出去一次（把插件拉到位）',
+    xys().length > beforeFrozen && xys().at(-1).x === 127 && xys().at(-1).y === 127,
+    `${xys().length - beforeFrozen} 条，最后 ${xys().at(-1).x}/${xys().at(-1).y}`);
+
+  // 改 CC 号：立刻生效（Bridge 侧会落盘记住）
+  win.document.getElementById('ccX').value = '30';
+  win.document.getElementById('ccY').value = '31';
+  win.document.getElementById('ccX').dispatch('change', {});
+  check('xy: 改 CC 号立刻用新号发一次当前位置',
+    xys().at(-1).cc_x === 30 && xys().at(-1).cc_y === 31,
+    `${JSON.stringify(xys().at(-1))}`);
+
+  // 断连
+  ws.onclose();
+  check('xy: 断连后面变灰、读数显示未连接', plane.classList.contains('offline')
+    && readout.textContent === '未连接', `readout="${readout.textContent}"`);
+  const beforeOffline = xys().length;
+  touch('pointerdown', 0, 300);
+  await sleep(30);
+  check('xy: 断连时拖动不发值（宁可看起来不能按，也不做"悄悄不发"）',
+    xys().length === beforeOffline, `${xys().length - beforeOffline} 条`);
 }
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>X/Y Pad</title>
+<link rel="stylesheet" href="ios.css?v=8">
+<style>
+  /* 页面专属：顶栏 / 正方形控制面 / 一行读数+动作 / 一行 CC 配置。整屏不滚动。 */
+  body { display: flex; flex-direction: column; align-items: center; }
+  .topbar { max-width: 420px; }
+</style>
+</head>
+<body>
+
+<nav class="topbar"><a class="btn-back" href="/">‹ 返回</a></nav>
+
+<div class="xy-wrap">
+
+  <div class="xy-plane unset" id="plane">
+    <div class="xy-h"></div>
+    <div class="xy-v"></div>
+    <div class="xy-marker"></div>
+  </div>
+
+  <div class="xy-actions">
+    <button class="btn btn-ghost" id="btnCenter" type="button">回中</button>
+    <button class="btn btn-ghost" id="btnFreeze" type="button">冻结</button>
+  </div>
+
+  <p class="xy-readout dim" id="readout">未连接</p>
+  <p class="xy-readout dim" id="hint"></p>
+
+  <div class="xy-cfg">
+    <span class="range-label">X CC</span>
+    <input class="range-input" id="ccX" type="number" min="0" max="127" step="1" value="20">
+    <span class="range-label">Y CC</span>
+    <input class="range-input" id="ccY" type="number" min="0" max="127" step="1" value="21">
+    <span class="range-label">Ch</span>
+    <select class="cfg-select" id="selCh" aria-label="MIDI 通道"></select>
+  </div>
+
+</div>
+
+<p class="foot-brand">Powered by Levi黄</p>
+
+<script src="xy.js?v=1"></script>
+</body>
+</html>

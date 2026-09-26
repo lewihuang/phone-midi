@@ -1,6 +1,6 @@
 # X/Y Pad（二维控制面）— 方案与步骤分解
 
-> 状态：**设计已确认，待实现**（2026-09-26 需求拷问定稿）。
+> 状态：**已实现**（2026-09-26 需求拷问定稿 → 同日实现；Bridge 侧 21 项 + 手机端 19 项检查）。
 > 关联：[CONTEXT.md](../../CONTEXT.md)（X/Y Pad / Position / Position Marker / Landing / Drag / Recentre）·
 > [ADR 0004](../adr/0004-midi-note-triggers.md)（"离散事件绕开映射引擎"的先例）·
 > [roadmap](../roadmap.md)（"XY Pad 触屏"候选）

@@ -289,6 +289,8 @@ class SensorHandler:
         # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
         self.pad_layout = load_pad_layout()
         self._pad_held: dict[int, tuple[float, int]] = {}   # 触发编号 → (按下时刻, 当时发的音符)
+        # X/Y Pad：两个 CC + 通道，随每条消息带上（多端/重连都不会用到过期配置）
+        self.xy_config = load_xy_config()
 
     @property
     def client_count(self): return len(self._clients)
@@ -391,6 +393,39 @@ class SensorHandler:
         else:
             self.pad_note_on(trigger_id)
 
+    async def _on_xy(self, obj: dict):
+        """X/Y Pad：一条消息 = 两条 7-bit CC（同端口、同通道，两个可配的 CC 号）。
+
+        配置随每条消息带来：Bridge 以"最近一次收到的配置"为准并落盘，所以多端/重连、
+        甚至手机上改完 CC 号不重启 Bridge 都不会用到过期配置。非法值退回已知的好值。
+        """
+        x, y = obj.get("x"), obj.get("y")
+        if not (isinstance(x, (int, float)) and not isinstance(x, bool)
+                and isinstance(y, (int, float)) and not isinstance(y, bool)):
+            log.warning("忽略非法的 X/Y 值：x=%r y=%r", x, y)
+            return
+
+        cfg = {
+            "cc_x": _xy_int(obj.get("cc_x"), 0, 127, self.xy_config["cc_x"]),
+            "cc_y": _xy_int(obj.get("cc_y"), 0, 127, self.xy_config["cc_y"]),
+            "channel": _xy_int(obj.get("channel"), 0, 15, self.xy_config["channel"]),
+        }
+        if cfg != self.xy_config:                 # 只在真的变了时写盘（不是每条消息都写）
+            self.xy_config = save_xy_config(cfg)
+
+        cc_x = max(0, min(127, int(round(x))))
+        cc_y = max(0, min(127, int(round(y))))
+        ch = self.xy_config["channel"]
+        try:
+            # 与推子**同一个端口**（面板才需要独立端口），也不进映射引擎
+            self.midi.send_cc(self.xy_config["cc_x"], ch, cc_x)
+            self.midi.send_cc(self.xy_config["cc_y"], ch, cc_y)
+        except Exception as e:
+            log.warning("X/Y 发送失败（CC%d/%d）：%s", self.xy_config["cc_x"], self.xy_config["cc_y"], e)
+            return
+        # PC 窗口的"当前值"行跟着显示（X/Y 与推子不会同时用，与面板触发同一处理）
+        self.last_cc_output = [{"cc": self.xy_config["cc_x"], "channel": ch, "value": cc_x}]
+
     def set_pad_layout(self, layout) -> dict:
         """Validate, persist and return the layout. Persisting does not need the server running."""
         self.pad_layout = save_pad_layout(layout)
@@ -436,8 +471,10 @@ class SensorHandler:
         elif tp == "set_target":
             # `cc` may be omitted for pitch-bend targets, which still need a channel.
             cc = obj.get("cc")
-            self.engine.update_target(int(cc) if cc is not None else None,
-                                      int(obj.get("channel", 0)))
+            channel = int(obj.get("channel", 0))
+            self.engine.update_target(int(cc) if cc is not None else None, channel)
+            # 记住它：以前只改内存，重启 Bridge 就回到 default.json（用户要求"记住上次的选择"）
+            save_fader_target(int(cc) if cc is not None else None, channel)
             await ws.send_json({"type": "config", "config": self.engine.config})
         elif tp == "set_source":
             self.engine.update_source(obj.get("sensor", "rotation_vector"), obj.get("axis", "pitch"))
@@ -446,6 +483,10 @@ class SensorHandler:
             # Shortcut Pad: a discrete trigger, not a value. It never touches the mapping engine
             # (no range, no curve, no smoothing) — it becomes one MIDI Note (ADR 0004).
             await self._on_trigger(obj)
+        elif obj.get("kind") == "xy":
+            # X/Y Pad: one message = two 7-bit CCs. Also bypasses the mapping engine (same
+            # reasoning as the pad's triggers) — see docs/spec/xy-pad.md.
+            await self._on_xy(obj)
         else:
             sensor = obj.get("sensor", "rotation_vector")
             axis = obj.get("axis", "pitch")
@@ -685,6 +726,79 @@ def save_window_prefs(prefs: dict):
             json.dump(prefs, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning("保存窗口尺寸失败：%s", e)
+
+# ── X/Y Pad（二维控制面） ────────────────────────────────────────────────────
+# 手机发 {kind:'xy', x, y, cc_x, cc_y, channel}，Bridge 直接变成**两条 send_cc**。
+# **不进映射引擎**（引擎是单轴的，还带 curve / dead-zone / smoothing 一整套），
+# 两轴都是线性、无死区、无平滑 —— 沿用 ADR 0004"离散事件绕开引擎"的先例。
+# 端口**与推子共用**：面板当初要独立端口是因为它的音符会被 All MIDI Inputs 里的音源轨
+# （OMNI）吃掉；而 X/Y 的 CC 本来就是要喂乐器轨的。设计见 docs/spec/xy-pad.md。
+XY_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "xy.json"
+XY_DEFAULT = {"cc_x": 20, "cc_y": 21, "channel": 0}   # 默认不撞推子的 CC1
+XY_CC_KEYS = ("cc_x", "cc_y")
+
+def _xy_int(value, lo: int, hi: int, fallback: int) -> int:
+    """只要真正的整数：字符串、浮点、布尔一律退回默认（bool 是 int 的子类，单独挡掉）。"""
+    if isinstance(value, bool) or not isinstance(value, int): return fallback
+    return value if lo <= value <= hi else fallback
+
+def xy_clean_config(data) -> dict:
+    out = dict(XY_DEFAULT)
+    if isinstance(data, dict):
+        for key in XY_CC_KEYS:
+            out[key] = _xy_int(data.get(key), 0, 127, XY_DEFAULT[key])
+        out["channel"] = _xy_int(data.get("channel"), 0, 15, XY_DEFAULT["channel"])
+    return out
+
+def load_xy_config() -> dict:
+    try:
+        with open(XY_PREFS, "r", encoding="utf-8") as f:
+            return xy_clean_config(json.load(f))
+    except FileNotFoundError:
+        return dict(XY_DEFAULT)
+    except Exception as e:
+        log.warning("xy.json 读不出来（%s），用默认值", e)
+        return dict(XY_DEFAULT)
+
+def save_xy_config(cfg: dict) -> dict:
+    cfg = xy_clean_config(cfg)
+    try:
+        XY_PREFS.parent.mkdir(parents=True, exist_ok=True)
+        with open(XY_PREFS, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("保存 xy.json 失败：%s", e)
+    return cfg
+
+# 推子的目标（CC + 通道）也记住：它一直是纯内存的，重启 Bridge 就回到 default.json
+FADER_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "fader.json"
+
+def load_fader_target() -> dict | None:
+    try:
+        with open(FADER_PREFS, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cc = data.get("cc")
+        cc = cc if (not isinstance(cc, bool) and isinstance(cc, int) and 0 <= cc <= 127) else None
+        ch = _xy_int(data.get("channel"), 0, 15, 0)
+        return {"cc": cc, "channel": ch}
+    except Exception:
+        return None
+
+def save_fader_target(cc, channel) -> None:
+    try:
+        FADER_PREFS.parent.mkdir(parents=True, exist_ok=True)
+        with open(FADER_PREFS, "w", encoding="utf-8") as f:
+            json.dump({"cc": cc, "channel": channel}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("保存 fader.json 失败：%s", e)
+
+def apply_remembered_fader_target(engine) -> None:
+    """把上次用过的 CC/通道套回引擎（在引擎刚建好的时候调用）。"""
+    remembered = load_fader_target()
+    if remembered:
+        engine.update_target(remembered["cc"], remembered["channel"])
+        log.info("推子目标沿用上次的选择：%s",
+                 "Pitch Bend" if remembered["cc"] is None else "CC%d" % remembered["cc"])
 
 # ── 快捷键面板（Shortcut Pad） ────────────────────────────────────────────────
 # 手机只发一个触发编号；Bridge 把它变成一条 MIDI Note（通道 16、音符 36 + 编号）。
@@ -1894,6 +2008,7 @@ class BridgeApp:
             try:
                 base_dir = _base_dir()
                 engine = MappingEngine(str(base_dir / "config" / "default.json"))
+                apply_remembered_fader_target(engine)     # 沿用上次用过的 CC / 通道
                 handler = SensorHandler(engine, midi, pb_idle_sec=self._pb_idle_sec,
                                         pad_midi=pad_midi)
                 ssl_context, protocol = self._ssl_for(base_dir)
@@ -2092,6 +2207,7 @@ def _cli_mode(args):
                         "共用端口时音源轨会跟着弹音", args.pad_name, e)
 
     engine = MappingEngine(str(config_path))
+    apply_remembered_fader_target(engine)             # 沿用上次用过的 CC / 通道
     handler = SensorHandler(engine, midi, pb_idle_sec=args.pb_idle_ms / 1000.0, pad_midi=pad_midi)
     app = web.Application()
     app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
