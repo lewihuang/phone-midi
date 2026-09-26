@@ -102,6 +102,24 @@ Bridge 窗口（展开态）→ **「快捷键面板…」** 按钮：
 
 ---
 
+## 映射不生效时：先读配置，别猜
+
+Nuendo 把 MIDI Remote 设备与分配存在文本 JSON 里，直接看比在界面里翻快得多：
+
+| 文件 | 看什么 |
+|------|--------|
+| `~\Documents\Steinberg\Nuendo\MIDI Remote\Driver Scripts\Local\DIY\<设备名>\*.json` | `DetectionInputNameFilterEquals`（输入端口）、`MidiBindingToNote` 的 `ChannelNumber`（0-based）与 `Pitch`、`SurfaceElements` 的元素类型（`Button` / `TriggerPad` / `Fader`） |
+| `~\Documents\Steinberg\Nuendo\MIDI Remote\User Settings\DIY_<设备名>_*_globalmappings.json` | `ValueBinding`：`HostValue` 指向哪个宿主值（如 `StopValue`）、`Type`（`Toggle` / `Absolute` …） |
+
+**两条经验**（都来自真机）：
+
+1. **绑"命令 / 宏"比绑"运输状态值"可靠**。宏是"按下即执行一次"，与瞬时触发天然吻合；
+   `Transport.Stop` 是**状态值**，Steinberg 工厂脚本里它配的是 `MR_Button`（见
+   `midiremote_factory_scripts\Public\*\*.js`：`makeValueBinding(btnStop.mSurfaceValue, mTransport.mValue.mStop).setTypeToggle()`）。
+   用 `TriggerPad` + 状态值这条路，在真机上不生效；换成**命令 / 宏**立刻可用。
+2. **判据先分开**：用 `python tools\send_note.py --port PhonePad` 直接往面板端口发一条 Note。
+   它能停 = DAW 侧没问题（去查手机 → Bridge 那一段）；它不停 = DAW 侧的绑定问题。
+
 ## 没反应怎么查
 
 | 现象 | 查什么 |
