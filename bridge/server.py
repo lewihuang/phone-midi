@@ -1,5 +1,5 @@
 """
-Phone MIDI Controller — PC Bridge
+MIDI Deck — PC Bridge
 ===================================
 WebSocket server receiving phone sensor data, applying mappings, outputting MIDI CC.
 MIDI via ctypes winmm.dll (Windows). GUI via tkinter.
@@ -569,7 +569,7 @@ def _generate_cert(cert_path, key_path, ips=None):
 
     now = datetime.now(timezone.utc)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Phone MIDI Bridge")])
+    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MIDI Deck")])
     cert = (x509.CertificateBuilder()
             .subject_name(subj).issuer_name(subj).public_key(key.public_key())
             .serial_number(x509.random_serial_number())
@@ -978,7 +978,7 @@ COMPACT_BAR_H = 26          # 固定厚度：不再随窗口高度撑满（原�
 class BridgeApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Phone MIDI Bridge")
+        self.root.title("MIDI Deck")
         self._win_size = (480, 420)
         self.root.geometry("480x420")
         self.root.configure(bg=BG)
@@ -1029,7 +1029,7 @@ class BridgeApp:
         self._built_compact = False
         self._mode = "setup"
         self.root.overrideredirect(False)
-        self.root.title("手机推子 · Phone MIDI Bridge")
+        self.root.title("MIDI Deck")
         self.root.attributes("-topmost", False)
         self.root.minsize(400, 340)
         self._set_geometry(self._standard_spec())
@@ -1129,7 +1129,7 @@ class BridgeApp:
 
         if compact:
             # 精简模式：只看当前值与进度条；无标题栏、置顶、可拖动、右下角可拉伸。
-            self.root.title("手机推子 · 精简")
+            self.root.title("MIDI Deck")
             self.root.overrideredirect(True)          # 去掉标题栏
             self.root.attributes("-topmost", True)    # 否则会被 DAW 盖住
             # The expanded view sets minsize(400, 340); leaving it in place silently clamped
@@ -1183,7 +1183,7 @@ class BridgeApp:
             return
 
         self.root.overrideredirect(False)
-        self.root.title("手机推子 · Phone MIDI Bridge")
+        self.root.title("MIDI Deck")
         self.root.minsize(400, 340)
         self.root.attributes("-topmost", False)
         # 展开态恢复上次关闭时的尺寸（没有记录过就还是原来的 480x420）
@@ -1917,7 +1917,7 @@ class BridgeApp:
                     except Exception: pass
                 msg = str(e)
                 if isinstance(e, OSError) and _port_in_use("0.0.0.0", port):
-                    msg = (f"端口 {port} 已被占用：已经有一个「手机推子」在运行，"
+                    msg = (f"端口 {port} 已被占用：已经有一个「MIDI Deck」在运行，"
                            f"手机的连接进的是那一个。请先关闭它（或换一个端口）再启动。")
                 self._start_result = {"ok": False, "msg": msg}; return
 
@@ -2056,7 +2056,7 @@ class BridgeApp:
 # ── CLI / Entry ─────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Phone MIDI Controller Bridge")
+    p = argparse.ArgumentParser(description="MIDI Deck (PC Bridge)")
     p.add_argument("--list-ports", action="store_true", help="List MIDI ports and exit")
     p.add_argument("--no-gui", action="store_true", help="CLI mode (no GUI)")
     p.add_argument("--midi-device", type=int, default=None)

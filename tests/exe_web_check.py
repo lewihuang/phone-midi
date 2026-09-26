@@ -10,8 +10,23 @@ import sys
 from PyInstaller.archive.readers import CArchiveReader
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, 'bridge', 'dist', '手机推子.exe')
 WEB = os.path.join(ROOT, 'web')
+
+
+def _find_exe():
+    """按"dist 里最新的 .exe"找打包产物。
+
+    文件名**不能写死**：产品改过名（`phone-midi-bridge.exe` → `手机推子.exe` → `MIDI Deck.exe`），
+    写死一次就在改名时静默失效——而这条检查存在的意义正是"别让过期快照看起来像好的"。
+    """
+    dist = os.path.join(ROOT, 'bridge', 'dist')
+    if not os.path.isdir(dist):
+        return None
+    exes = [os.path.join(dist, f) for f in os.listdir(dist) if f.lower().endswith('.exe')]
+    return max(exes, key=os.path.getmtime) if exes else None
+
+
+EXE = _find_exe()
 
 results = []
 
@@ -22,9 +37,10 @@ def check(name, ok, detail=''):
 
 
 def main():
-    if not os.path.exists(EXE):
-        print('SKIP  bridge/dist/手机推子.exe not built (nothing to compare)')
+    if not EXE or not os.path.exists(EXE):
+        print('SKIP  bridge/dist/*.exe not built (nothing to compare)')
         return 0
+    print('      打包产物：%s' % os.path.basename(EXE))
 
     ar = CArchiveReader(EXE)
     toc = {k.replace('\\', '/'): k for k in ar.toc}

@@ -175,7 +175,7 @@ function check(name, ok, detail) {
   const home = loadPage('home');
   check('home: 首页只是模块列表，不加载任何脚本',
     files.home.length === 0 && Object.keys(home.win).length > 0,
-    `${htmlOf('home').includes('/fader.html') ? '有' : '缺'} 推子入口 / ${htmlOf('home').includes('/pad.html') ? '有' : '缺'} 模拟按钮入口`);
+    `${htmlOf('home').includes('/fader.html') ? '有' : '缺'} Digital Fader 入口 / ${htmlOf('home').includes('/pad.html') ? '有' : '缺'} Shortcut Pad 入口`);
 }
 
 {

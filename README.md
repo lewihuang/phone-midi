@@ -32,13 +32,20 @@ pip install -r requirements.txt
 python bridge/server.py
 ```
 
-或直接双击 `bridge/dist/手机推子.exe`（注意：exe 把 `server.py` 与 `web/` 快照打包，
-改了前端需重新 PyInstaller 打包才生效；源码模式则实时读盘）。
+或直接双击 `bridge/dist/MIDI Deck.exe`（注意：exe 把 `server.py` 与 `web/` 快照打包，
+改了前端需重新打包才生效；源码模式则实时读盘）。重新打包：
+
+```powershell
+python tools/make_icon.py        # 只在改图标时需要；生成 bridge/midi-deck.ico
+cd bridge
+pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-deck.ico `
+  --add-data "config;config" --add-data "../web;web" server.py
+```
 
 ### 4. 手机连接
 
 手机和电脑在同一局域网。启动后 Bridge 会显示形如 `https://192.168.x.x:8765` 的网址，
-手机浏览器打开它，点击"启动传感器"。
+手机浏览器打开它，从功能模块列表里选一个（Digital Fader / Shortcut Pad / X/Y Pad）。
 
 - **必须是 `https://`**：浏览器只在安全上下文中提供 DeviceOrientation/DeviceMotion，
   `http://` 下传感器接口不存在，手机端会启动失败。Bridge 会自动生成自签名证书（含 SAN），

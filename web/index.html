@@ -7,7 +7,7 @@
 <title>MIDI Deck</title>
 <link rel="stylesheet" href="ios.css?v=7">
 <style>
-  /* 首页：只有功能模块列表。点进去才是具体工具（推子 / 模拟按钮 / 以后新增的）。 */
+  /* 首页：只有功能模块列表（卡片只留名字，不带说明）。点进去才是具体工具。 */
   body { display: flex; flex-direction: column; align-items: center; }
   .title-block { width: 100%; max-width: 420px; margin-bottom: 16px; }
   h1 { margin-bottom: 2px; }
@@ -17,22 +17,15 @@
 
 <div class="title-block">
   <h1>MIDI Deck</h1>
-  <p class="sub">选一个功能模块</p>
 </div>
 
 <nav class="module-list">
   <a class="module" href="/fader.html">
-    <span class="m-text">
-      <span class="m-name">手机推子</span>
-      <span class="m-desc">手机姿态当推子：抬手 / 翻转 / 摇晃弯音</span>
-    </span>
+    <span class="m-name">Digital Fader</span>
     <span class="m-arrow">›</span>
   </a>
   <a class="module" href="/pad.html">
-    <span class="m-text">
-      <span class="m-name">模拟按钮</span>
-      <span class="m-desc">宏命令按钮阵列，配 DAW 快捷键用（8 键 × 6 页）</span>
-    </span>
+    <span class="m-name">Shortcut Pad</span>
     <span class="m-arrow">›</span>
   </a>
 </nav>

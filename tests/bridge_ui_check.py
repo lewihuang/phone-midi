@@ -275,7 +275,7 @@ try:
           f"{server.load_window_prefs()}")
 
     # 启动失败必须可见
-    app._show_error("端口 8765 已被占用：已经有一个「手机推子」在运行")
+    app._show_error("端口 8765 已被占用：已经有一个「MIDI Deck」在运行")
     app.root.update_idletasks()
     texts = [w.cget("text") for w in app.root.winfo_children() if isinstance(w, tk.Label)]
     check("端口被占用时窗口显示错误而不是运行中",

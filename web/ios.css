@@ -317,9 +317,7 @@ a { color: var(--blue); text-decoration: none; }
   transition: transform 60ms ease, background 120ms ease;
 }
 .module:active { transform: scale(0.985); background: var(--fill); }
-.module .m-text { flex: 1 1 auto; min-width: 0; }
 .module .m-name { display: block; font-size: 18px; font-weight: 600; }
-.module .m-desc { display: block; margin-top: 3px; font-size: 13px; color: var(--label-2); }
 .module .m-arrow { color: var(--label-3); font-size: 22px; line-height: 1; }
 
 /* ── 快捷面板（pad.html） ─────────────────────────────────────────────── */
