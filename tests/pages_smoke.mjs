@@ -258,5 +258,38 @@ function check(name, ok, detail) {
     `${ws.sent.at(-1).phase} then offline`);
 }
 
+// ── the light theme itself ───────────────────────────────────────────────────
+// 用户要的"浅色"是浅灰底。旧代码写过 prefers-color-scheme: dark 的第二套令牌，于是在深色系统
+// （以及无头截图环境）上整页渲染成黑底——用户看到的和"浅色"完全相反。这几条守的就是这个坑：
+// 主题只有浅色一套，而且底色必须真的是浅色。
+{
+  // 注释里会**提到**这件事（记录为什么删掉深色分支），所以检查前先把注释剥掉，只看真正的声明。
+  const css = fs.readFileSync(web('ios.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const luma = (hex) => {
+    const c = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(c.substr(i, 2), 16));
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  };
+  const bg = (css.match(/--bg:\s*(#[0-9a-fA-F]{3,6})/) || [])[1] || '';
+  check('theme: ios.css has no dark-mode branch',
+    !/prefers-color-scheme/.test(css), '只有浅色一套，不跟随系统深色');
+  check('theme: the page background is light',
+    !!bg && luma(bg) > 0.8, `--bg ${bg} luma ${bg ? luma(bg).toFixed(2) : 'n/a'}`);
+  check('theme: colour schemes are pinned to light',
+    /color-scheme:\s*light/.test(css), '表单控件/滚动条不跟着系统走');
+  check('theme: a pressed cell gets darker, not lighter',
+    /\.cell\.pressed\s*\{[^}]*brightness\((0?\.\d+)\)/.test(css) &&
+    parseFloat(css.match(/\.cell\.pressed\s*\{[^}]*brightness\((0?\.\d+)\)/)[1]) < 1,
+    '浅色填充再提亮会贴到白色，按下去等于没反馈');
+
+  const tuned = ['index', 'latency', 'pad', 'calFlip', 'calLift', 'calShake'];
+  const straight = tuned.filter((p) => !/ios\.css/.test(htmlOf(p)));
+  check('theme: every phone page uses the shared stylesheet',
+    straight.length === 0, straight.length ? `missing on ${straight.join(',')}` : `${tuned.length} pages`);
+  const flipped = [...Object.keys(pages)].filter((p) => /prefers-color-scheme/.test(htmlOf(p)));
+  check('theme: no page overrides the theme for dark systems',
+    flipped.length === 0, flipped.length ? `dark branch on ${flipped.join(',')}` : 'no page carries a dark branch');
+}
+
 console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);
 process.exit(results.some((r) => !r) ? 1 : 0);

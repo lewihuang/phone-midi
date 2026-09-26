@@ -697,8 +697,10 @@ PAD_TEXT_MAX = 24
 # 编辑器里的**预设**颜色（不再是白名单）：用户可以用取色器或十六进制任意填（D20）。
 # 校验只看"是不是合法颜色"——因为这个字符串会被写进手机上的 style.background，
 # 放宽成任意 CSS 就是一条注入通道。
-PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
-              "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
+# 默认值（[0]）是中性灰：浅色页面上不抢眼，用户想区分功能时再挑颜色。其余是 iOS 系统色的
+# 常用几档（默认色曾经是深蓝 #1e293b，那是深色主题时代的产物，在浅底上会把整页压暗）。
+PAD_COLORS = ("#8e8e93", "#007aff", "#34c759", "#ff9500",
+              "#ff3b30", "#5e5ce6", "#ff2d55", "#30b0c7")
 PAD_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 def pad_color_valid(color) -> bool:
@@ -707,12 +709,16 @@ def pad_color_valid(color) -> bool:
 
 def pad_color_norm(color) -> str:
     return color.strip().lower() if pad_color_valid(color) else PAD_COLORS[0]
+
+def pad_luma(color) -> float:
+    """颜色的相对亮度（0–1）。预设里有浅色，格子上的字不能一律用白色——太浅的底上白字看不清。"""
+    c = pad_color_norm(color).lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
 # 界面上"面板与推子共用端口"的选项文字（共用会让音源轨跟着弹音，见 PAD_PREFS 上方的说明）
 PAD_SAME_PORT = "（与推子相同）"
-# 固定调色板：全部是深色，白字可读。颜色无语义，纯粹为了一眼认出功能（spec D11）。
-PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
-              "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
-
 def pad_trigger_count() -> int:
     return PAD_SLOTS * PAD_PAGES
 
@@ -1501,10 +1507,14 @@ class BridgeApp:
                 border = "#60A5FA"                      # 当前选中
             else:
                 border = BG
+            # 文字颜色跟着填充色走：浅色格子用深字，深色格子用白字（预设里两种都有）
+            light = pad_luma(color) > 0.6
             widgets["frame"].configure(bg=color, highlightbackground=border)
-            widgets["label"].configure(text=cfg.get("text") or "", bg=color)
+            widgets["label"].configure(text=cfg.get("text") or "", bg=color,
+                                       fg=("#1C1C1E" if light else "#FFFFFF"))
             widgets["note"].configure(bg=color, text="N%d" % note,
-                                      fg=(AMBER if dup.get(note, 0) > 1 else "#C8CDD6"))
+                                      fg=("#7F1D1D" if light else AMBER) if dup.get(note, 0) > 1
+                                         else ("#3C3C43" if light else "#C8CDD6"))
 
     def _pad_redraw(self):
         """重画格子 + 同步两个输入框的显示与可用状态。"""

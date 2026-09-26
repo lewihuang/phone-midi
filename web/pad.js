@@ -20,7 +20,10 @@
   // Row-major order is what ties a slot to its trigger id; the phone never shows the note
   // number (only the PC editor does) and never computes one — the Bridge maps id -> note.
   const RECONNECT_MS = 2000;
-  const DEFAULT_COLOR = '#1e293b';
+  // Only used while a layout has not arrived (offline / first paint): neutral gray, matching
+  // the Bridge default. Dark navy here was a leftover from the dark theme and looked wrong on
+  // the light gray page.
+  const DEFAULT_COLOR = '#8e8e93';
 
   const elTitle = document.getElementById('pageTitle');
   const elGrid = document.getElementById('grid');
@@ -134,6 +137,9 @@
       held.set(ev.pointerId, id);
       try { cell.el.setPointerCapture(ev.pointerId); } catch (_) { /* not fatal */ }
       cell.el.classList.add('pressed');
+      cell.el.classList.remove('fired');
+      // 有振动马达就顺手振一下（iOS Safari 没有这个 API，所以只是"能振就振"）
+      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
       showError('');
       send({ kind: 'trigger', id, phase: 'down' });
     });
@@ -143,7 +149,7 @@
       if (id === undefined) return;
       held.delete(ev.pointerId);
       const c = cells[id % SLOTS];
-      if (c) c.el.classList.remove('pressed');
+      if (c) flashReleased(c.el);
       send({ kind: 'trigger', id, phase: 'up' });
     };
     cell.el.addEventListener('pointerup', release);
@@ -151,12 +157,24 @@
     cell.el.addEventListener('lostpointercapture', release);
   }
 
+  /**
+   * 松手后保留一小段"已发出"的痕迹。
+   * 为什么：轻点的按住时间只有几十毫秒，纯 `:active` 式的反馈在真机上几乎看不见——
+   * 用户明确要求"不能只凭感觉，要能看见自己在按什么"。
+   */
+  function flashReleased(el) {
+    el.classList.remove('pressed');
+    el.classList.add('fired');
+    clearTimeout(el._firedTimer);
+    el._firedTimer = setTimeout(() => el.classList.remove('fired'), 220);
+  }
+
   /** Drop every held button (page switch, disconnect): never leave a Note On hanging. */
   function releaseAll() {
     for (const [pointerId, id] of held) {
       held.delete(pointerId);
       const c = cells[id % SLOTS];
-      if (c) c.el.classList.remove('pressed');
+      if (c) flashReleased(c.el);
       send({ kind: 'trigger', id, phase: 'up' });
     }
   }

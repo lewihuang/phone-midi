@@ -28,7 +28,13 @@ const OUT = opt('out', join(tmpdir(), 'phoneshots'));
 const WIDTH = Number(opt('width', '390'));
 const HEIGHT = Number(opt('height', '844'));
 const ONLY = opt('only', '');
-const SETTLE_MS = Number(opt('settle', '2500'));   // 等 WebSocket 连上、布局推过来
+const SETTLE_MS = Number(opt('settle', '4000'));   // 等 WebSocket 连上、布局推过来
+// 坑：`--virtual-time-budget` 会**抢在真实 I/O 前面**把虚拟时间走完。Bridge 刚冷启动时，第一次
+// 截图的页面有可能在 WS 还没握上手时就被拍下来（页面停在"未连接"，格子是默认灰 + 变暗），
+// 看上去像样式坏了。所以：预算给宽一点，并把 pad 放在最后拍（那时 Bridge 已经热了）。
+// 另一个坑：不给 `--user-data-dir` 时 Edge 会借用默认配置目录，可能命中**旧 CSS 的缓存**，
+// 于是"新样式没生效"变成假象。所以用一个一次性的临时配置目录。
+const PROFILE = join(tmpdir(), 'phoneshots-profile');
 
 const EDGE = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -40,12 +46,12 @@ if (!EDGE) {
 }
 
 const PAGES = [
-  ['pad', '/pad.html'],
   ['index', '/'],
   ['calibrate-lift', '/calibrate-lift.html'],
   ['calibrate-flip', '/calibrate-flip.html'],
   ['calibrate-shake', '/calibrate-shake.html'],
   ['latency', '/latency.html'],
+  ['pad', '/pad.html'],          // 最后拍：它要等 Bridge 推布局，见上面 SETTLE_MS 的说明
 ];
 
 const run = (cmd, argv, opts = {}) => new Promise((resolve) => {
@@ -85,6 +91,7 @@ try {
     const png = join(OUT, `${name}.png`);
     await run(EDGE, [
       '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
+      `--user-data-dir=${PROFILE}`,
       `--window-size=${WIDTH},${HEIGHT}`, `--virtual-time-budget=${SETTLE_MS}`,
       `--screenshot=${png}`, `http://127.0.0.1:${PORT}${path}`,
     ]);

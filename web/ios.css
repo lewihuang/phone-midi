@@ -8,56 +8,38 @@
  *            /calibrate-lift|flip|shake.html（校准向导）
  * 不覆盖：开发调试页（fusion-calibrate*.html、pose-debug、vibrato-lab）——它们在 PC 上看。
  *
- * 浅色为主，并支持 prefers-color-scheme: dark（iOS 的深色也是这套令牌的另一组取值）。
+ * **只有浅色一套**：曾经写过 prefers-color-scheme: dark 的第二组令牌，结果深色系统
+ * （以及无头截图环境）整片渲染成黑底——用户要的是浅灰，所以深色分支已删除。
  */
 
 /* ── 设计令牌 ────────────────────────────────────────────────────────────── */
 :root {
-  /* iOS system colors（浅色） */
-  --bg: #f2f2f7;              /* systemGroupedBackground */
-  --card: #ffffff;            /* secondarySystemGroupedBackground */
-  --fill: #f2f2f7;            /* tertiarySystemFill，用于分段控件底色等 */
+  /* 浅灰底 + 纯白卡片（iOS 分组列表的观感）。**刻意不跟随系统深色**：用户要的就是浅色，
+     跟着壳走会在深色系统上整片变黑。 */
+  --bg: #ececee;              /* 浅灰页面底 */
+  --card: #ffffff;            /* 卡片 */
+  --fill: #e4e4e7;            /* 表单/分段控件的填充（比页面底略深一档） */
   --blue: #007aff;            /* systemBlue */
   --green: #34c759;
   --orange: #ff9500;
   --red: #ff3b30;
-  --yellow: #ffcc00;
 
-  /* iOS label / separator（浅色带透明度的黑） */
-  --label: #000000;
+  --label: #1c1c1e;           /* 近黑（不用纯黑，浅灰底上更柔和） */
   --label-2: rgba(60, 60, 67, 0.60);   /* secondaryLabel */
   --label-3: rgba(60, 60, 67, 0.30);   /* tertiaryLabel */
-  --sep: rgba(60, 60, 67, 0.29);       /* separator */
-  --sep-opaque: #c6c6c8;
+  --sep: rgba(60, 60, 67, 0.22);       /* separator */
 
   --radius: 12px;             /* 卡片与按钮 */
   --radius-lg: 16px;          /* 大卡片 */
   --radius-cell: 14px;        /* 面板按钮 */
   --gap: 16px;
 
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
-          "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* 等线优先（Windows/PC 上渲染轻、干净），iOS 上仍是系统 SF 字体 */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "DengXian", "等线",
+          system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
 
   --tap: transparent;         /* -webkit-tap-highlight-color */
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --card: #1c1c1e;
-    --fill: #2c2c2e;
-    --blue: #0a84ff;
-    --green: #30d158;
-    --orange: #ff9f0a;
-    --red: #ff453a;
-    --yellow: #ffd60a;
-    --label: #ffffff;
-    --label-2: rgba(235, 235, 245, 0.60);
-    --label-3: rgba(235, 235, 245, 0.30);
-    --sep: rgba(84, 84, 88, 0.65);
-    --sep-opaque: #38383a;
-  }
 }
 
 /* ── 基座 ────────────────────────────────────────────────────────────────── */
@@ -70,6 +52,8 @@ html, body {
   font-family: var(--font);
   font-size: 17px;              /* iOS body */
   line-height: 1.45;
+  /* 钉死浅色：不跟随系统深色。表单控件/滚动条也按浅色渲染，避免深色系统下"白卡片黑控件"。 */
+  color-scheme: light;
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: var(--tap);
   overscroll-behavior-y: none;
@@ -84,9 +68,9 @@ body {
 /* 页头：大标题 + 说明（iOS Large Title） */
 h1, .setup-title {
   margin: 4px 0 6px;
-  font-size: 34px;
-  line-height: 1.15;
-  font-weight: 700;
+  font-size: 32px;
+  line-height: 1.18;
+  font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--label);
 }
@@ -124,8 +108,8 @@ a { color: var(--blue); text-decoration: none; }
 }
 .card h2 {
   margin: 0 0 10px;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 19px;
+  font-weight: 500;
   letter-spacing: -0.01em;
 }
 /* 卡片内相邻区块用发丝线分隔 */
@@ -144,11 +128,12 @@ a { color: var(--blue); text-decoration: none; }
   color: #fff;
   font-family: inherit;
   font-size: 17px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  transition: opacity 120ms ease, transform 60ms ease;
+  transition: opacity 120ms ease, transform 60ms ease, filter 120ms ease;
 }
-.btn:active, .btn-primary:active { opacity: 0.75; transform: scale(0.985); }
+.btn:active, .btn-primary:active { opacity: 0.58; transform: scale(0.97); filter: brightness(0.92); }
+.btn-ghost:active { opacity: 0.5; }
 .btn:disabled { background: var(--fill); color: var(--label-3); cursor: not-allowed; }
 .btn-ghost {
   background: var(--fill);
@@ -176,14 +161,14 @@ a { color: var(--blue); text-decoration: none; }
   padding: 4px 11px;
   border-radius: 999px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .status.on   { background: color-mix(in srgb, var(--green) 18%, transparent);  color: var(--green); }
 .status.wait { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
 .status.off  { background: var(--fill); color: var(--label-2); }
 
 /* 校准状态徽标 */
-.cal-badge { padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.cal-badge { padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
 .cal-badge.ok   { background: color-mix(in srgb, var(--green) 18%, transparent);  color: var(--green); }
 .cal-badge.warn { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
 .link-cal { color: var(--blue); font-size: 15px; }
@@ -213,16 +198,16 @@ a { color: var(--blue); text-decoration: none; }
 .mode-desc { font-size: 15px; color: var(--label-2); }
 .mode-tag {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
-  background: var(--fill); color: var(--label-2); font-size: 13px; font-weight: 600;
+  background: var(--fill); color: var(--label-2); font-size: 13px; font-weight: 500;
 }
 
 /* ── 数值显示（推子页与校准页共用） ──────────────────────────────────────── */
 .pitch-display, .preview, .cc-label { text-align: center; }
-.pitch-label, .cc-label { font-size: 13px; color: var(--label-2); }
+.pitch-label, .cc-label { font-size: 13px; color: var(--label-2); font-weight: 400; }
 .pitch-value, .cc-big {
   font-family: var(--mono);
-  font-size: 56px;
-  font-weight: 700;
+  font-size: 54px;
+  font-weight: 500;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
   color: var(--label);
@@ -250,7 +235,7 @@ a { color: var(--blue); text-decoration: none; }
 .kv td { padding: 9px 0; font-size: 15px; border-bottom: 1px solid var(--sep); }
 .kv tr:last-child td { border-bottom: none; }
 .kv .k { color: var(--label-2); }
-.kv .v { text-align: right; font-family: var(--mono); color: var(--label); font-weight: 600; }
+.kv .v { text-align: right; font-family: var(--mono); color: var(--label); font-weight: 500; }
 .kv .dim { color: var(--label-2); font-weight: 400; }
 
 /* ── 校准向导：步骤点 ───────────────────────────────────────────────────── */
@@ -296,14 +281,21 @@ a { color: var(--blue); text-decoration: none; }
   background: var(--fill);
   color: #fff;
   font-size: clamp(15px, 5vw, 26px);
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.2;
   text-align: center;
   word-break: break-word;
+  /* 用户能挑任意颜色，浅色填充上纯白字会发飘，加一层很淡的阴影兜底 */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
   transition: transform 70ms ease, filter 70ms ease;
 }
-.cell.pressed { transform: scale(0.97); filter: brightness(1.18); }
+/* 按下：缩小 + 变深 + 白色内圈（三件事同时发生，盲按也能感觉到）。
+   用**变深**而不是变亮：填充色可能是浅色，浅色再提亮就贴到白色、按下去几乎没有变化。 */
+.cell.pressed { transform: scale(0.94); filter: brightness(0.82) saturate(1.05);
+                box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.95); }
+/* 松手后短暂保留的"已发出"痕迹：轻点一下也能看见 */
+.cell.fired { box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.5); }
 
 /* 页签 = iOS 分段控件（Segment Control） */
 #tabs {
@@ -327,6 +319,6 @@ a { color: var(--blue); text-decoration: none; }
 }
 .tab.active {
   background: var(--card);
-  font-weight: 600;
+  font-weight: 500;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }

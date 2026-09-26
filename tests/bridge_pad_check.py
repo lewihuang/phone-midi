@@ -130,6 +130,18 @@ bad_colors = server.pad_clean_layout({"pages": [{"cells": [
 check("非法颜色一律退回默认（颜色会进手机的 style，不能放开成任意 CSS）",
       all(c["color"] == server.PAD_COLORS[0] for c in bad_colors[:6]),
       f"6 种非法输入 -> {[c['color'] for c in bad_colors[:6]]}")
+
+# 默认色必须是浅色页面上不抢眼的那一档：默认色曾经是深蓝 #1e293b（深色主题时代的遗产），
+# 8 格全用它会把整片浅灰页面压成"暗底"——用户就是这么一眼看出来的。
+check("默认色是中性色，不是深色块",
+      server.pad_luma(server.PAD_COLORS[0]) > 0.4,
+      f"默认 {server.PAD_COLORS[0]} luma={server.pad_luma(server.PAD_COLORS[0]):.2f}")
+check("亮度只用于选字色：有界、单调、能吃掉 3 位 hex 与非法值",
+      server.pad_luma("#000000") == 0.0 and server.pad_luma("#ffffff") == 1.0
+      and server.pad_luma("#000000") < server.pad_luma("#8e8e93") < server.pad_luma("#ffffff")
+      and abs(server.pad_luma("#fff") - 1.0) < 1e-9
+      and server.pad_luma("nonsense") == server.pad_luma(server.PAD_COLORS[0]),
+      "浅底用深字、深底用白字，判断依据就是它")
 capped = server.pad_clean_layout({"pages": [{"title": "p%d" % i, "cells": []}
                                             for i in range(server.PAD_PAGES + 3)]})
 check("页数固定：多出来的页被丢掉（不增不删，永远 6 页）",
