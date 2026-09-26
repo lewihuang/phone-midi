@@ -33,7 +33,30 @@ def _base_dir() -> Path:
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+def log_file_path() -> Path:
+    """日志落盘的位置（与窗口尺寸、面板布局同一个目录）。
+
+    为什么需要：打包后的 exe 是 windowed 模式，**没有控制台**，`log.*` 只写 stderr 就等于扔掉。
+    真机排查时（"面板端口到底开没开"）只能靠用户念窗口上的字，代价很高。"""
+    return Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "bridge.log"
+
+def _setup_logging():
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        path = log_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:                                  # 简单的尺寸上限，避免无线增长
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.replace(path.with_suffix(".log.1"))
+        except OSError:
+            pass
+        handlers.append(logging.FileHandler(path, encoding="utf-8"))
+    except Exception:
+        pass                                  # 写不了日志也必须能启动
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+
+_setup_logging()
 log = logging.getLogger("bridge")
 
 # ── Windows MIDI via ctypes ──────────────────────────────────────────────────
