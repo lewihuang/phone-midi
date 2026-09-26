@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>延迟诊断 · MIDI Deck</title>
-<link rel="stylesheet" href="ios.css?v=6">
+<link rel="stylesheet" href="ios.css?v=7">
 <style>
   /* 页面专属：单栏，卡片自上而下堆叠 */
   body { max-width: 460px; margin: 0 auto; }
@@ -18,10 +18,8 @@
 </head>
 <body>
 
-<nav class="nav">
-  <a href="/">← MIDI Deck</a> · <a href="/fusion-calibrate.html">Mode A 调试</a> ·
-  <a href="/fusion-calibrate-flip.html">Mode B 调试</a> · <a href="/fusion-calibrate-shake.html">Mode C 调试</a>
-</nav>
+<nav class="topbar"><a class="btn-back" href="/">‹ 返回</a></nav>
+<p class="nav" style="justify-content:flex-start;margin-top:2px"><a href="/fusion-calibrate.html">Mode A 调试</a> · <a href="/fusion-calibrate-flip.html">Mode B 调试</a> · <a href="/fusion-calibrate-shake.html">Mode C 调试</a></p>
 
 <h1>延迟诊断</h1>
 <p class="sub">
@@ -129,6 +127,8 @@
 <p class="foot">
   提示：Mode B 的参数已固化在代码里（<code>fusion.js</code>），本页只做测量，不写任何存储。
 </p>
+
+<p class="foot-brand">Powered by Levi黄</p>
 
 <script src="fusion.js?v=23"></script>
 <script src="latency.js?v=4"></script>

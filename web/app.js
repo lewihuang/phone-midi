@@ -170,6 +170,12 @@
       // No filtering in the phone and none needed in the Bridge: every sensor event is sent.
       calMode: 'none',
 
+      // Mode C 不需要**范围**校准（静止时加速度天然为 0），但它有一个**力度**校准页。
+      // 这两个字段必须在每个模式上都有：applyModeSetupUi 以前只在 calMode !== 'none' 时更新链接，
+      // 于是 Mode C 的按钮一直停在上一模式的地址（用户实测：点进去校准的是 Mode B）。
+      calibrateHref: '/calibrate-shake.html',
+      calibrateLabel: '力度校准',
+
     },
 
   };
@@ -268,23 +274,22 @@
     const m = MODES[modeId];
     if (!m) return;
     if (elModeSelect) elModeSelect.value = modeId;
-    if (!elCalRow) return;
-    if (m.calMode !== 'none' && m.calibrateHref) {
-      elCalRow.classList.remove('hidden');
-      if (elCalLink) {
-        elCalLink.href = m.calibrateHref;
-        elCalLink.textContent = m.calibrateLabel || '去校准';
-      }
+
+    // 链接**每个模式都必须更新**：以前只在 `calMode !== 'none'` 时更新，于是 Mode C
+    // 一直停在上一模式的地址（用户实测："Mode C 校准范围点击进入后会校准 Mode B"）。
+    if (m.calibrateHref && elCalLink) {
+      elCalLink.href = m.calibrateHref;
+      elCalLink.textContent = m.calibrateLabel || '去校准';
+    }
+
+    // 徽章只在"这个模式确实有范围校准这回事"时才显示：Mode C 无需范围校准，
+    // 摆一个"未校准"只会让人以为它坏了。
+    if (elCalRow) elCalRow.classList.toggle('hidden', m.calMode === 'none');
+    if (elCalBadge && m.calMode !== 'none') {
       const ok = hasModeCalibration(m);
-      if (elCalBadge) {
-        // Mode C works uncalibrated with approximate gains, so "未校准" alone would read
-        // as "broken". Say which of the two states it is in.
-        const optional = m.calMode === 'optional';
-        elCalBadge.textContent = ok ? '已校准' : (optional ? '默认力度' : '未校准');
-        elCalBadge.className = 'cal-badge ' + (ok || optional ? 'ok' : 'warn');
-      }
-    } else {
-      elCalRow.classList.add('hidden');
+      const optional = m.calMode === 'optional';
+      elCalBadge.textContent = ok ? '已校准' : (optional ? '默认力度' : '未校准');
+      elCalBadge.className = 'cal-badge ' + (ok || optional ? 'ok' : 'warn');
     }
   }
 
@@ -293,7 +298,8 @@
     selectedMode = modeId;
     applyModeSetupUi(modeId);
     updateStartButtonLabel();
-    history.replaceState(null, '', '/?mode=' + modeId);
+    // 推子页现在在 /fader.html，地址栏也要跟着它（写死 "/?mode=" 会让刷新回到首页）
+    history.replaceState(null, '', '/fader.html?mode=' + modeId);
   }
 
 

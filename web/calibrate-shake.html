@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>力度精调 · 摇晃弯音 · MIDI Deck</title>
-<link rel="stylesheet" href="ios.css?v=6">
+<link rel="stylesheet" href="ios.css?v=7">
 <style>
   /* 页面专属：360px 宽的单栏向导。模式身份色用 iOS 的 tint 表达（只有浅色一套）。 */
   :root { --blue: #34c759; }
@@ -24,7 +24,7 @@
 </head>
 <body data-profile="shake">
 
-<nav class="nav"><a href="/fader.html?mode=C">← 手机推子</a></nav>
+<nav class="topbar"><a class="btn-back" href="/fader.html?mode=C">‹ 返回</a></nav>
 
 <div class="card">
   <div class="mode-tag">Mode C · 摇晃弯音</div>
@@ -56,9 +56,11 @@
   结果保存为 <code>phone-midi/calibration/shake/v2</code>，只影响 Mode C。
 </p>
 
+<p class="foot-brand">Powered by Levi黄</p>
+
 <div class="toast" id="toast"></div>
 
 <script src="fusion.js?v=23"></script>
-<script src="calibrate-wizard.js?v=22"></script>
+<script src="calibrate-wizard.js?v=23"></script>
 </body>
 </html>

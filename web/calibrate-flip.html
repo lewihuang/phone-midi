@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>校准 · 翻转推子 · MIDI Deck</title>
-<link rel="stylesheet" href="ios.css?v=6">
+<link rel="stylesheet" href="ios.css?v=7">
 <style>
   /* 页面专属：360px 宽的单栏向导。模式身份色用 iOS 的 tint 表达（只有浅色一套）。 */
   :root { --blue: #5e5ce6; }
@@ -24,7 +24,7 @@
 </head>
 <body data-profile="flip">
 
-<nav class="nav"><a href="/fader.html?mode=B">← 手机推子</a></nav>
+<nav class="topbar"><a class="btn-back" href="/fader.html?mode=B">‹ 返回</a></nav>
 
 <div class="card">
   <div class="mode-tag">Mode B · 翻转推子</div>
@@ -52,9 +52,11 @@
 <p class="error" id="error"></p>
 <p class="foot">校准仅用于 Mode B，与抬手校准分开保存。换手机或清除站点数据后需重新校准。</p>
 
+<p class="foot-brand">Powered by Levi黄</p>
+
 <div class="toast" id="toast"></div>
 
 <script src="fusion.js?v=23"></script>
-<script src="calibrate-wizard.js?v=22"></script>
+<script src="calibrate-wizard.js?v=23"></script>
 </body>
 </html>

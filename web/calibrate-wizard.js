@@ -346,7 +346,7 @@
     }
     showToast('校准已保存');
     setTimeout(() => {
-      window.location.replace('/?mode=' + returnMode);
+      window.location.replace('/fader.html?mode=' + returnMode);
     }, 400);
   }
 
@@ -372,7 +372,7 @@
       } else if (s.key === 'done') {
         const ok = await shakeFinishAndVerify();
         if (!ok) return;
-        setTimeout(() => window.location.replace('/?mode=' + returnMode), 700);
+        setTimeout(() => window.location.replace('/fader.html?mode=' + returnMode), 700);
       }
     } catch (e) {
       showError(e.message || '采样失败');

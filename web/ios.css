@@ -88,7 +88,31 @@ h1, .setup-title {
 
 a { color: var(--blue); text-decoration: none; }
 
-/* ── 导航（页面底部/顶部的细链接行） ─────────────────────────────────────── */
+/* ── 导航 ────────────────────────────────────────────────────────────────── */
+/* 统一的"返回"：**每个次级页面左上角同一个样子**（用户："现在一个页面一个返回位置，并且返回按钮
+   不够醒目，统一放到页面左上角"）。做成实心胶囊而不是裸文字链接——它得一眼看得见、一按就准。 */
+.topbar {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.btn-back {
+  display: inline-flex; align-items: center;
+  min-height: 36px; padding: 0 16px 0 12px;
+  border: none; border-radius: 999px;
+  background: var(--card);
+  color: var(--blue);
+  font: inherit; font-size: 16px; font-weight: 500;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+  transition: transform 60ms ease, background 120ms ease;
+}
+.btn-back:active { transform: scale(0.96); background: var(--fill); }
+
+/* 次级链接（调试页之类，不是主操作） */
 .nav, .foot {
   display: flex;
   flex-wrap: wrap;
@@ -100,6 +124,16 @@ a { color: var(--blue); text-decoration: none; }
 }
 .nav a, .foot a { color: var(--label-2); }
 .foot code { font-family: var(--mono); font-size: 12px; }
+
+/* 作者 / 联系方式：**所有页面同一格式**，一行，贴在页面最底部居中（原来是右下角两行小字） */
+.foot-brand {
+  width: 100%;
+  margin: 26px 0 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--label-3);
+  white-space: nowrap;
+}
 
 /* ── 卡片（iOS Inset Grouped） ───────────────────────────────────────────── */
 .card {
@@ -142,12 +176,6 @@ a { color: var(--blue); text-decoration: none; }
   color: var(--blue);
 }
 .btn-sm { min-height: 34px; padding: 0 14px; font-size: 15px; border-radius: 9px; }
-.btn-back {
-  min-height: 34px; padding: 0 10px 0 2px;
-  background: none; border: none;
-  color: var(--blue); font: inherit; font-size: 17px; font-weight: 500;
-  cursor: pointer;
-}
 .btn-row, .row-btn { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
 .btn-row > .btn, .row-btn > .btn { flex: 1; }
 /* 自检按钮串（延迟页的震动时长那一排）会挤到两行，压一点横向内边距 */

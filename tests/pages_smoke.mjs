@@ -166,7 +166,8 @@ function check(name, ok, detail) {
   check('fader: 映射行与 CC 行各自留了高度',
     /\.cc-row\s*\{[^}]*line-height/.test(h) && /\.cfg-row\s*\{[^}]*row-gap/.test(h),
     '不会挤到一起');
-  check('fader: 有回首页的导航', /<a href="\/">← MIDI Deck<\/a>/.test(h), '← MIDI Deck');
+  check('fader: 左上角有统一的返回按钮（回首页）',
+    /<nav class="topbar"><a class="btn-back" href="\/">/.test(h), '‹ 返回');
 }
 
 {
@@ -373,6 +374,58 @@ function check(name, ok, detail) {
   const flipped = [...Object.keys(pages)].filter((p) => /prefers-color-scheme/.test(htmlOf(p)));
   check('theme: no page overrides the theme for dark systems',
     flipped.length === 0, flipped.length ? `dark branch on ${flipped.join(',')}` : 'no page carries a dark branch');
+}
+
+// ── 全站统一的返回按钮与作者行（用户 2026-09-26 要求） ────────────────────────
+{
+  // ①返回按钮：每个次级页面**左上角同一个样子**（原来是"一个页面一个位置"，返回不够醒目）。
+  //   判据是"回到页面的最前面"——btn-back 必须出现在 <body> 开头附近，而不是页脚。
+  const secondary = ['fader', 'pad', 'latency', 'calFlip', 'calLift', 'calShake'];
+  const missing = [], misplaced = [];
+  for (const page of secondary) {
+    const h = htmlOf(page);
+    const bodyAt = h.indexOf('<body');
+    const backAt = h.indexOf('class="btn-back"');
+    if (backAt < 0) missing.push(page);
+    else if (backAt - bodyAt > 600) misplaced.push(`${page}(${backAt - bodyAt})`);
+  }
+  check('全部次级页面的返回按钮都在页面开头（左上角）',
+    missing.length === 0 && misplaced.length === 0,
+    missing.length ? `缺：${missing.join(',')}` : (misplaced.length ? `太靠后：${misplaced.join(',')}` : `${secondary.length} 个页面统一`));
+
+  // ②作者/联系方式：所有（手机端）页面同一格式、一行、贴在最底部（原来只有两个页面有，
+  //   还是右下角两行小字）。开发调试页不在手机端范围内（它们在 PC 上看，自带深色样式）。
+  const all = ['home', 'fader', 'pad', 'latency', 'calFlip', 'calLift', 'calShake'];
+  const brandLine = '<p class="foot-brand">Powered by Levi黄</p>';
+  const noBrand = all.filter((p) => !htmlOf(p).includes(brandLine));
+  const oldBrand = all.filter((p) => /class="brand"/.test(htmlOf(p)));
+  check('所有手机页面的作者行都是同一行、同一格式',
+    noBrand.length === 0 && oldBrand.length === 0,
+    noBrand.length ? `缺：${noBrand.join(',')}` : (oldBrand.length ? `还在用旧样式：${oldBrand.join(',')}` : `${all.length} 个页面一致`));
+
+  // ③Mode C 的校准入口必须指向 Mode C 的页面（曾经一直停在上一模式的地址上）
+  const f = loadPage('fader');
+  const calLink = f.win.document.getElementById('calLink');
+  const pickMode = (id) => {
+    f.win.document.getElementById('modeSelect').value = id;
+    f.win.document.getElementById('modeSelect').dispatch('change', {});
+  };
+  pickMode('A');
+  const hrefA = calLink.href;
+  pickMode('B');
+  const hrefB = calLink.href;
+  pickMode('C');
+  const hrefC = calLink.href;
+  check('每个模式的校准按钮都指向自己的校准页（Mode C 不再指到 Mode B）',
+    hrefA === '/calibrate-lift.html' && hrefB === '/calibrate-flip.html' && hrefC === '/calibrate-shake.html',
+    `A→${hrefA} B→${hrefB} C→${hrefC}`);
+  check('Mode C 不需要范围校准：不显示"未校准"徽章',
+    f.win.document.getElementById('calRow').classList.contains('hidden')
+    && calLink.textContent === '力度校准',
+    `calRow hidden / 按钮文字「${calLink.textContent}」`);
+  check('切模式时地址栏跟的是推子页（刷新不会跳回首页）',
+    /history\.replaceState\(null, '', '\/fader\.html\?mode='/.test(fs.readFileSync(web('app.js'), 'utf8')),
+    "app.js: replaceState('/fader.html?mode=' + modeId)");
 }
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);

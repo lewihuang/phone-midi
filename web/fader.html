@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>手机推子 · MIDI Deck</title>
-<link rel="stylesheet" href="ios.css?v=6">
+<link rel="stylesheet" href="ios.css?v=7">
 <style>
   /* 页面专属：单栏 360px。面板切换靠 .hidden / .show（app.js 在用这两个类名，必须保留）。 */
   body { display: flex; flex-direction: column; align-items: center; }
@@ -46,7 +46,7 @@
 </head>
 <body>
 
-<nav class="nav"><a href="/">← MIDI Deck</a></nav>
+<nav class="topbar"><a class="btn-back" href="/">‹ 返回</a></nav>
 
 <div class="status off" id="status">● 未连接</div>
 
@@ -82,7 +82,7 @@
 <div class="runtime" id="runtimePanel">
 
   <div class="runtime-head">
-    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">← 返回</button>
+    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">‹ 返回</button>
     <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
   </div>
 
@@ -124,7 +124,7 @@
 
 </div>
 
-<div class="brand"><br>Powered by Levi黄</div>
+<p class="foot-brand">Powered by Levi黄</p>
 
 <script src="fusion.js?v=23"></script>
 
@@ -132,7 +132,7 @@
      itself is no longer wired to any mode (it lives on /vibrato-lab.html for experiments). -->
 <script src="vibrato.js?v=23"></script>
 
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 
 </body>
 </html>

@@ -37,8 +37,11 @@ def check(name, ok, detail=""):
 
 
 # ── 测试用的临时 pad.json：绝不碰真实的 %APPDATA% 配置 ───────────────────────
+# 窗口/端口的记忆（window.json）也要一起隔离：它现在会被界面读（上次选的 MIDI 输出与面板端口），
+# 不隔离的话测试既会读到你真实的选择、也会把它覆盖掉。
 tmpdir = tempfile.mkdtemp(prefix="pad-check-")
 server.PAD_PREFS = __import__("pathlib").Path(tmpdir) / "pad.json"
+server.WINDOW_PREFS = __import__("pathlib").Path(tmpdir) / "window.json"
 
 
 def reset_pad_file():
@@ -382,12 +385,37 @@ try:
 
     app._pad_port_var.set(server.PAD_SAME_PORT)
     check("选「与推子相同」解析为 None（不额外开端口）", app._pad_selection() is None, "None")
-    if len(app._pad_port_box.cget("values")) > 1:
-        first_port = app._pad_port_box.cget("values")[1]
+    port_names = list(app._pad_port_box.cget("values"))
+    if len(port_names) > 1:
+        first_port = port_names[1]
         app._pad_port_var.set(first_port)
         check("选了具体端口就按端口名传给服务器",
               app._pad_selection() == first_port, f"'{first_port}'")
     app._pad_port_var.set(server.PAD_SAME_PORT)
+
+    # 记忆：上次选过的面板端口要在下次打开时自动选回；端口不在了就退回"与推子相同"
+    saved_port = port_names[-1] if len(port_names) > 1 else server.PAD_SAME_PORT
+    server.save_window_prefs({"pad_port": saved_port, "midi_out": "loopMIDI Port"})
+    again = server.BridgeApp()
+    try:
+        again.root.withdraw()
+        check("下次打开自动选回上次的面板端口",
+              again._pad_port_var.get() == saved_port, f"'{again._pad_port_var.get()}'")
+        server.save_window_prefs({"pad_port": "这个端口不存在了"})
+        third = server.BridgeApp()
+        try:
+            third.root.withdraw()
+            check("记忆里的端口不见了就退回「与推子相同」，不会选到一个空项",
+                  third._pad_port_var.get() == server.PAD_SAME_PORT
+                  and third._pad_selection() is None,
+                  f"'{third._pad_port_var.get()}'")
+        finally:
+            try: third.root.destroy()
+            except Exception: pass
+    finally:
+        try: again.root.destroy()
+        except Exception: pass
+    server.save_window_prefs({})
 
     app._open_pad_editor()
     app.root.update_idletasks()
