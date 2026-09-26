@@ -61,22 +61,51 @@ function decode(file) {
   }
   const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
     .map(([k, c]) => [(k >>> 0).toString(16).padStart(6, '0'), c / n]);
-  return { w, h, lum: sum / n, top };
+  return { w, h, lum: sum / n, top, px: out, channels };
+}
+
+/** 沿某一行数"比底色暗的团块"有多少个 —— 用来核实点阵每行有几个点（不靠推断）。 */
+function countRow({ w, px, channels }, y, darkBelow) {
+  const lumAt = (x) => {
+    const p = (y * w + x) * channels;
+    const r = px[p], g = channels >= 3 ? px[p + 1] : px[p], b = channels >= 3 ? px[p + 2] : px[p];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const hits = [];
+  for (let x = 0; x < w; x++) if (lumAt(x) < darkBelow) hits.push(x);
+  // 相邻像素算同一个点
+  const groups = [];
+  for (const x of hits) {
+    const last = groups[groups.length - 1];
+    if (last && x - last[last.length - 1] <= 2) last.push(x);
+    else groups.push([x]);
+  }
+  return groups.map((g) => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
 }
 
 const argv = process.argv.slice(2);
 const topIdx = argv.indexOf('--top');
 const TOP = topIdx >= 0 ? Number(argv[topIdx + 1] || 6) : 0;
+const rowIdx = argv.indexOf('--row');
+const ROW = rowIdx >= 0 ? Number(argv[rowIdx + 1]) : null;
+const darkIdx = argv.indexOf('--dark-below');
+const DARK = darkIdx >= 0 ? Number(argv[darkIdx + 1]) : 235;
 // 只有给了 --top 时才跳过它后面那个数字，否则第一个文件名会被当成参数吃掉。
-const files = argv.filter((a, i) => !a.startsWith('--') && !(topIdx >= 0 && i === topIdx + 1));
+const skip = new Set([topIdx, rowIdx, darkIdx].filter((i) => i >= 0).map((i) => i + 1));
+const files = argv.filter((a, i) => !a.startsWith('--') && !skip.has(i));
 
 for (const f of files) {
-  const { w, h, lum, top } = decode(f);
+  const img = decode(f);
+  const { w, h, lum, top } = img;
   const kind = lum > 180 ? '浅底 ✓' : (lum > 90 ? '偏中' : '暗底 ✗');
   console.log(`${kind}  平均亮度 ${lum.toFixed(1).padStart(6)}  ${w}x${h}  ${f}`);
   if (TOP) {
     for (const [hex, share] of top.slice(0, TOP)) {
       console.log(`        #${hex}  ${(share * 100).toFixed(1).padStart(5)}%`);
     }
+  }
+  if (ROW != null) {
+    const centres = countRow(img, Math.min(h - 1, Math.max(0, ROW)), DARK);
+    console.log(`        第 ${ROW} 行：${centres.length} 个团块（亮度 < ${DARK}），x 位置 ${centres.join(', ')}`);
   }
 }
