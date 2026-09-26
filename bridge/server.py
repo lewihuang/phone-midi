@@ -687,8 +687,8 @@ def save_window_prefs(prefs: dict):
 PAD_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "pad.json"
 PAD_COLS = 2                  # 2 列 × 4 行（2026-09-26 由 4×2 改；手机与 PC 编辑器必须同构）
 PAD_ROWS = 4
+PAD_PAGES = 6                 # **固定 6 页 = 48 个按钮**；页数不可增删（spec D18）
 PAD_SLOTS = PAD_COLS * PAD_ROWS
-PAD_PAGES_MAX = 8
 PAD_NOTE_BASE = 36            # 触发编号 0 → 音符 36（**默认值**；每格可在 PC 端改，见 T2）
 PAD_CHANNEL = 15              # 0-based，即 MIDI 通道 16；与推子所在通道分开，便于 DAW 侧过滤
 PAD_HOLD_GUARD_SEC = 1.0      # 手机丢了"松开"事件时的兜底，思路同 pb_watchdog
@@ -701,7 +701,7 @@ PAD_COLORS = ("#1e293b", "#1d4ed8", "#0e7490", "#15803d",
               "#b45309", "#b91c1c", "#6d28d9", "#9d174d")
 
 def pad_trigger_count() -> int:
-    return PAD_SLOTS * PAD_PAGES_MAX
+    return PAD_SLOTS * PAD_PAGES
 
 def pad_note_for(trigger_id: int) -> int:
     """**默认**音符：36 + 触发编号。配置里没写 note 时用它（旧配置因此行为不变）。"""
@@ -761,11 +761,12 @@ def pad_swap_cells(layout, page_index: int, slot_a: int, slot_b: int) -> bool:
 
 def default_pad_layout() -> dict:
     note = pad_note_for
-    return {"version": 1, "pages": [{
-        "title": PAD_DEFAULT_TITLE,
-        "cells": [{"text": "宏 %d" % (i + 1), "color": PAD_COLORS[0], "note": note(i)}
-                  for i in range(PAD_SLOTS)],
-    }]}
+    return {"version": 1, "pages": [
+        {"title": "页 %d" % (p + 1),
+         "cells": [{"text": "", "color": PAD_COLORS[0], "note": note(p * PAD_SLOTS + i)}
+                   for i in range(PAD_SLOTS)]}
+        for p in range(PAD_PAGES)
+    ]}
 
 def _pad_clean_cell(cell, trigger_id: int) -> dict:
     """一格：文字 / 颜色 / **音符**。缺字段一律补默认值，非法值一律丢掉。"""
@@ -786,7 +787,7 @@ def pad_clean_layout(layout) -> dict:
     """
     pages = []
     if isinstance(layout, dict) and isinstance(layout.get("pages"), list):
-        for page_index, page in enumerate(layout["pages"][:PAD_PAGES_MAX]):
+        for page_index, page in enumerate(layout["pages"][:PAD_PAGES]):
             if not isinstance(page, dict): continue
             title = page.get("title")
             cells = page.get("cells")
@@ -797,7 +798,9 @@ def pad_clean_layout(layout) -> dict:
                           for i, c in enumerate(cells if isinstance(cells, list) else [])][:PAD_SLOTS],
             })
     if not pages: return default_pad_layout()
-    # Pad every page out to a full grid so the phone always renders the same shape (2 列 × 4 行).
+    # 页数是**固定**的（D18）：缺的补齐、多的丢掉，手机与 PC 永远是同一套 6 页。
+    while len(pages) < PAD_PAGES:
+        pages.append({"title": "页 %d" % (len(pages) + 1), "cells": []})
     for page_index, page in enumerate(pages):
         while len(page["cells"]) < PAD_SLOTS:
             page["cells"].append(_pad_clean_cell(None, page_index * PAD_SLOTS + len(page["cells"])))
@@ -935,7 +938,6 @@ class BridgeApp:
         self._pad_tab_btns = []
         self._pad_swatches = []
         self._pad_save_timer = None
-        self._pad_confirm_delete = False
         self._pad_drag_from = None       # 拖动源格（None = 没在拖）
         self._pad_drop_slot = None       # 当前落点格
         self._pad_slot_at = {}           # widget → slot，拖动时反查落点
@@ -1367,24 +1369,17 @@ class BridgeApp:
 
         tk.Label(self._pad_body, text="快捷键面板", font=FONT_H1, bg=BG, fg=GREEN).pack(pady=(14, 2))
         tk.Label(self._pad_body,
-                 text="改完即时同步到手机。格子上 N36… 就是要在 Nuendo 的映射助手里学习的那条 Note",
+                 text="改完即时同步到手机。音符编号只在 PC 显示（手机上不显示，避免干扰辨认）",
                  font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 8))
 
-        # 页签：与手机底部的页签一一对应
+        # 页签：固定 6 页（D18），所以没有"加页/删页"，标签用"序号 + 标题前几个字"
         tabs = tk.Frame(self._pad_body, bg=BG)
         tabs.pack(fill=tk.X, padx=16)
         for i in range(len(pages)):
-            b = tk.Button(tabs, font=FONT_HINT, relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+            b = tk.Button(tabs, font=FONT_HINT, relief=tk.FLAT, padx=6, pady=3, cursor="hand2",
                           command=lambda idx=i: self._pad_goto(idx))
             b.pack(side=tk.LEFT, padx=(0, 4))
             self._pad_tab_btns.append(b)
-        tk.Button(tabs, text="＋ 加页", font=FONT_HINT, relief=tk.FLAT, padx=8, pady=3,
-                  cursor="hand2", bg=SURFACE, fg=FG_DIM,
-                  command=self._pad_add_page).pack(side=tk.LEFT, padx=(10, 4))
-        if len(pages) > 1:
-            tk.Button(tabs, text="删除本页", font=FONT_HINT, relief=tk.FLAT, padx=8, pady=3,
-                      cursor="hand2", bg=SURFACE, fg=FG_DIM,
-                      command=self._pad_del_page).pack(side=tk.LEFT)
 
         # 页标题：手机上那一行大标题
         row = tk.Frame(self._pad_body, bg=BG)
@@ -1464,8 +1459,8 @@ class BridgeApp:
         cells = page.get("cells") if isinstance(page.get("cells"), list) else []
         dup = pad_duplicate_notes(self._pad_layout)
         for i, b in enumerate(self._pad_tab_btns):
-            title = (self._pad_pages()[i].get("title") or ("页 %d" % (i + 1)))[:12]
-            b.configure(text=title, bg=(BORDER if i == self._pad_page else SURFACE),
+            title = (self._pad_pages()[i].get("title") or "")[:6]
+            b.configure(text="%d %s" % (i + 1, title), bg=(BORDER if i == self._pad_page else SURFACE),
                         fg=(FG if i == self._pad_page else FG_DIM), activebackground=BORDER)
         for slot, widgets in enumerate(self._pad_cells):
             cfg = cells[slot] if slot < len(cells) and isinstance(cells[slot], dict) else {}
@@ -1503,7 +1498,6 @@ class BridgeApp:
     def _pad_goto(self, index):
         self._pad_page = index
         self._pad_sel = None
-        self._pad_confirm_delete = False
         self._pad_drag_from = self._pad_drop_slot = None
         self._pad_render()
 
@@ -1600,32 +1594,7 @@ class BridgeApp:
         self._pad_redraw()
         self._pad_commit()
 
-    def _pad_add_page(self):
-        pages = self._pad_pages()
-        if len(pages) >= PAD_PAGES_MAX:
-            self._pad_status("最多 %d 页" % PAD_PAGES_MAX); return
-        pages.append({"title": "新页 %d" % (len(pages) + 1),
-                      "cells": [{"text": "", "color": PAD_COLORS[0]} for _ in range(PAD_SLOTS)]})
-        self._pad_page = len(pages) - 1
-        self._pad_sel = None
-        self._pad_commit()
-        self._pad_render()
-        self._pad_status("已加一页；手机上会立刻多出一个页签")
-
-    def _pad_del_page(self):
-        pages = self._pad_pages()
-        if len(pages) <= 1:
-            self._pad_status("至少保留一页"); return
-        # 两次点击确认，而不是模态弹窗：不引额外 import，也不会弹出被 DAW 挡住的对话框
-        if not self._pad_confirm_delete:
-            self._pad_confirm_delete = True
-            self._pad_status("再点一次「删除本页」确认删除这一页"); return
-        self._pad_confirm_delete = False
-        del pages[self._pad_page]
-        self._pad_page = max(0, self._pad_page - 1)
-        self._pad_sel = None
-        self._pad_commit()
-        self._pad_render()
+    # 页数是固定的（D18）：没有"加页/删页"，所以这里没有对应的方法。
 
     def _pad_status(self, msg):
         if self._pad_win is None: return

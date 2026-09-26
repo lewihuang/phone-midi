@@ -175,7 +175,6 @@ function check(name, ok, detail) {
   const grid = win.document.getElementById('grid');
   const tabs = win.document.getElementById('tabs');
   const cellText = (i) => grid.children[i].children[0].textContent;
-  const cellNote = (i) => grid.children[i].children[1].textContent;
   const press = (i, pointerId) => grid.children[i].dispatch('pointerdown', { pointerId, preventDefault() {} });
   const release = (i, pointerId) => grid.children[i].dispatch('pointerup', { pointerId });
 
@@ -188,9 +187,10 @@ function check(name, ok, detail) {
     && /grid-template-rows:\s*repeat\(4,\s*1fr\)/.test(padHtml)
     && /const COLS = 2;/.test(padScript) && /const ROWS = 4;/.test(padScript),
     'CSS 2×4 = pad.js COLS/ROWS');
-  check('pad: cells carry their trigger numbers N36…N43',
-    grid.children.map((_c, i) => cellNote(i)).join(' ') === Array.from({ length: 8 }, (_v, i) => `N${36 + i}`).join(' '),
-    `N36 N37 N38 N39 …`);
+  check('pad: cells carry only their label (no note badge on the phone)',
+    grid.children.every((c) => c.children.length === 1)
+    && grid.children.map((_c, i) => cellText(i)).every((t) => !/^N\d+$/.test(t)),
+    '音符编号只在 PC 编辑器里显示');
   check('pad: no tab bar until a layout with pages arrives',
     tabs.classList.contains('hidden') && tabs.children.length === 0,
     `${tabs.children.length} tab(s) before the first pad_layout`);
@@ -234,10 +234,10 @@ function check(name, ok, detail) {
   release(1, 3);
 
   tabs.children[1].dispatch('click', {});
-  check('pad: switching pages renumbers and retitles',
-    cellText(0) === '播放' && cellNote(0) === 'N44'
+  check('pad: switching pages retitles and refills',
+    cellText(0) === '播放'
     && win.document.getElementById('pageTitle').textContent === '走带',
-    `${cellText(0)} / ${cellNote(0)}`);
+    `${cellText(0)} / title='${win.document.getElementById('pageTitle').textContent}'`);
   press(0, 4);
   check('pad: page 2 continues the numbering at id 8', ws.sent.at(-1).id === 8, JSON.stringify(ws.sent.at(-1)));
   release(0, 4);
@@ -247,7 +247,7 @@ function check(name, ok, detail) {
   ws.onmessage({ data: 'not json at all' });
   ws.onmessage({ data: JSON.stringify({ type: 'config', config: {} }) });
   check('pad: unknown/foreign message types are ignored, never fatal',
-    ws.sent.length === before && grid.children.length === 8 && cellNote(0) === 'N44',
+    ws.sent.length === before && grid.children.length === 8 && cellText(0) === '播放',
     'forward compatible: state read-back can arrive later without breaking the pad');
 
   press(0, 5);

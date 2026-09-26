@@ -16,10 +16,9 @@
   const COLS = 2;
   const ROWS = 4;
   const SLOTS = COLS * ROWS;   // 8 cells per page — the PC editor mirrors exactly this grid
-  // Forced reflow to reflect: 2 columns x 4 rows (2026-09-26, was 4x2: the wide short buttons
-  // wasted the phone's vertical space). Row-major order is what ties a slot to its trigger id.
-  const MAX_PAGES = 8;
-  const NOTE_BASE = 36;        // trigger id 0 -> note 36 (channel 16, see the ADR)
+  const PAGES = 6;             // 固定 6 页 = 48 个按钮（页数不可增删，见 spec D18）
+  // Row-major order is what ties a slot to its trigger id; the phone never shows the note
+  // number (only the PC editor does) and never computes one — the Bridge maps id -> note.
   const RECONNECT_MS = 2000;
   const DEFAULT_COLOR = '#1e293b';
 
@@ -40,7 +39,6 @@
   const held = new Map();  // pointerId -> trigger id, so a slide-off releases the right trigger
 
   const triggerId = (pageIndex, slot) => pageIndex * SLOTS + slot;
-  const noteFor = (id) => NOTE_BASE + id;
 
   function showError(msg) {
     const text = msg || '';
@@ -69,12 +67,9 @@
       el.className = 'cell';
       el.dataset.slot = String(slot);
       const label = document.createElement('span');
-      const note = document.createElement('span');
-      note.className = 'note';
       el.appendChild(label);
-      el.appendChild(note);
       elGrid.appendChild(el);
-      cells.push({ el, label, note });
+      cells.push({ el, label });
       bindCell(cells[slot], slot);
     }
   }
@@ -93,7 +88,7 @@
       const color = (c && typeof c.color === 'string' && c.color) ? c.color : DEFAULT_COLOR;
       if (cell.label.textContent !== text) cell.label.textContent = text;
       if (cell.el.style.background !== color) cell.el.style.background = color;
-      cell.note.textContent = 'N' + noteFor(triggerId(page, slot));
+      // 音符编号只在 PC 端显示（手机上放角标会干扰"一眼认出这个按钮"）
     }
     renderTabs();
   }
@@ -124,7 +119,7 @@
 
   function applyLayout(next) {
     if (!next || !Array.isArray(next.pages) || next.pages.length === 0) return;
-    layout = { pages: next.pages.slice(0, MAX_PAGES) };
+    layout = { pages: next.pages.slice(0, PAGES) };
     if (page >= layout.pages.length) page = 0;
     updatePage();
   }

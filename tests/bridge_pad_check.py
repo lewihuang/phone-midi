@@ -96,19 +96,23 @@ check("越界/非法编号被拒绝",
 
 # ── 2. 布局清洗：坏输入必须退化成可用布局，而不是白屏 ─────────────────────────
 d = server.default_pad_layout()
-check("默认布局：1 页 × 8 格，标题与文字成对",
-      len(d["pages"]) == 1 and len(d["pages"][0]["cells"]) == 8
-      and d["pages"][0]["cells"][0]["text"] == "宏 1",
-      f"'{d['pages'][0]['title']}' / {[c['text'] for c in d['pages'][0]['cells']][:3]}…")
+check("默认布局：固定 6 页 × 8 格，每页有标题、每格有默认音符",
+      len(d["pages"]) == server.PAD_PAGES == 6
+      and all(len(p["cells"]) == server.PAD_SLOTS for p in d["pages"])
+      and d["pages"][0]["title"] == "页 1"
+      and d["pages"][5]["cells"][0]["note"] == 76,
+      f"{len(d['pages'])} 页，第 6 页首格音符 {d['pages'][5]['cells'][0]['note']}")
 check("空/非法的 layout 退化为默认",
       server.pad_clean_layout(None) == d and server.pad_clean_layout({"pages": []}) == d
       and server.pad_clean_layout("nonsense") == d,
       "None / 空 pages / 字符串 都返回默认布局")
 padded = server.pad_clean_layout({"pages": [{"title": "轨道颜色", "cells": [{"text": "红"}]}]})
-check("格子不足时补满 4×2（手机永远是同一形状）",
-      len(padded["pages"][0]["cells"]) == 8 and padded["pages"][0]["cells"][0]["text"] == "红"
-      and padded["pages"][0]["cells"][7]["text"] == "",
-      f"1 格输入 -> {len(padded['pages'][0]['cells'])} 格")
+check("页数固定：1 页的旧配置补齐到 6 页，格子也补满（手机永远同一套结构）",
+      len(padded["pages"]) == 6
+      and len(padded["pages"][0]["cells"]) == 8 and padded["pages"][0]["cells"][0]["text"] == "红"
+      and padded["pages"][0]["cells"][7]["text"] == ""
+      and padded["pages"][0]["title"] == "轨道颜色" and padded["pages"][5]["title"] == "页 6",
+      f"1 页 × 1 格输入 -> {len(padded['pages'])} 页 × {len(padded['pages'][0]['cells'])} 格")
 cleaned = server.pad_clean_layout({"pages": [{"title": "T", "cells": [
     {"text": "x" * 99, "color": "#ff00ff"},          # 超长文字 + 调色板外的颜色
     {"text": "ok", "color": server.PAD_COLORS[3]},
@@ -119,13 +123,16 @@ check("超长文字被截断、调色板外的颜色被拒",
       and cleaned["pages"][0]["cells"][1]["color"] == server.PAD_COLORS[3],
       f"text {server.PAD_TEXT_MAX} 字上限，颜色 {cleaned['pages'][0]['cells'][1]['color']}")
 capped = server.pad_clean_layout({"pages": [{"title": "p%d" % i, "cells": []}
-                                            for i in range(server.PAD_PAGES_MAX + 3)]})
-check("页数上限生效", len(capped["pages"]) == server.PAD_PAGES_MAX,
-      f"{server.PAD_PAGES_MAX} 页上限")
+                                            for i in range(server.PAD_PAGES + 3)]})
+check("页数固定：多出来的页被丢掉（不增不删，永远 6 页）",
+      len(capped["pages"]) == server.PAD_PAGES
+      and capped["pages"][0]["title"] == "p0" and capped["pages"][5]["title"] == "p5",
+      f"给了 {server.PAD_PAGES + 3} 页，留下 {len(capped['pages'])} 页")
 
 server.save_pad_layout({"pages": [{"title": "持久化", "cells": [{"text": "甲"}]}]})
-check("落盘后能读回，且读回时已被清洗",
+check("落盘后能读回，且读回时已被清洗（页数补齐、格子补满）",
       server.load_pad_layout()["pages"][0]["title"] == "持久化"
+      and len(server.load_pad_layout()["pages"]) == 6
       and len(server.load_pad_layout()["pages"][0]["cells"]) == 8,
       f"{server.PAD_PREFS.name}")
 
@@ -158,11 +165,11 @@ dupes = server.pad_duplicate_notes(server.pad_clean_layout({"pages": [
     {"cells": [{"note": 60}, {"note": 60}]},
     {"cells": [{"note": 60}]},
 ]}))
-# 断言性质而不是手算的具体默认值：两页共 16 格，其中 60 出现 3 次，其余每个音符恰好一次。
+# 断言性质，不手算具体默认值：总数 = 6 页 × 8 格；出现过重复；不同音符数少于总格数。
+total_cells = server.PAD_SLOTS * server.PAD_PAGES
 check("重复音符能被数出来（跨页也算，编辑器据此提示）",
-      dupes.get(60) == 3 and sum(dupes.values()) == 2 * server.PAD_SLOTS
-      and sorted(dupes.values()) == [1] * (len(dupes) - 1) + [3],
-      f"60 出现 {dupes.get(60)} 次；共 {sum(dupes.values())} 格 / {len(dupes)} 个不同音符")
+      dupes.get(60) >= 3 and sum(dupes.values()) == total_cells and len(dupes) < total_cells,
+      f"60 至少出现 {dupes.get(60)} 次；共 {sum(dupes.values())} 格 / {len(dupes)} 个不同音符")
 
 swap_layout = server.pad_clean_layout({"pages": [{"cells": [
     {"text": "甲", "color": server.PAD_COLORS[2], "note": 99},
@@ -364,7 +371,7 @@ try:
     app._pad_commit()
     check("页标题改动同步到模型与页签",
           app._pad_layout["pages"][0]["title"] == "轨道颜色"
-          and app._pad_tab_btns[0].cget("text") == "轨道颜色",
+          and "轨道颜色" in app._pad_tab_btns[0].cget("text"),
           f"tab='{app._pad_tab_btns[0].cget('text')}'")
 
     # 形状：逐格核对行列，确保和手机是同一套 2 列 × 4 行、行优先
@@ -412,19 +419,19 @@ try:
           and app._pad_sel == 2,
           f"0 号格的 '{text_before}'/N{note_before} 现在在第 3 格")
 
-    app._pad_add_page()
-    check("加页：手机侧会多一个页签，且新页编号从 N44 起",
-          len(app._pad_layout["pages"]) == 2 and len(app._pad_tab_btns) == 2
-          and app._pad_cells[0]["note"].cget("text") == "N44",
-          f"{len(app._pad_layout['pages'])} 页，当前页首格 {app._pad_cells[0]['note'].cget('text')}")
-
-    app._pad_del_page()
-    check("删页需要点两次（防误删）",
-          len(app._pad_layout["pages"]) == 2 and app._pad_confirm_delete is True,
-          "第一次点击只提示，不删")
-    app._pad_del_page()
-    check("第二次点击才真的删掉", len(app._pad_layout["pages"]) == 1,
-          f"{len(app._pad_layout['pages'])} 页")
+    # 页数固定 6 页（D18）：编辑器给出 6 个页签，且不存在加页/删页的方法
+    check("编辑器固定 6 页：6 个页签、没有加页/删页的入口",
+          len(app._pad_layout["pages"]) == server.PAD_PAGES == 6
+          and len(app._pad_tab_btns) == 6
+          and not hasattr(app, "_pad_add_page") and not hasattr(app, "_pad_del_page"),
+          f"{len(app._pad_layout['pages'])} 页 / {len(app._pad_tab_btns)} 个页签")
+    app._pad_goto(5)
+    check("切到第 6 页：标题与格子标签跟着换（该页默认音符从 76 起）",
+          app._pad_page == 5
+          and app._pad_layout["pages"][5]["cells"][0]["note"] == 76
+          and app._pad_cells[0]["note"].cget("text") == "N76",
+          f"第 6 页首格 {app._pad_cells[0]['note'].cget('text')}")
+    app._pad_goto(0)
 
     app._close_pad_editor()
     check("关闭编辑器后不留窗口引用", app._pad_win is None and app._pad_cells == [], "已清理")
