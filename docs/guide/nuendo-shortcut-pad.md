@@ -123,16 +123,28 @@ Bridge 窗口（展开态）→ **「快捷键面板…」** 按钮：
 
 只有 DirectMusic 有条目 → MIDI Remote 的设备枚举看不到它 → 设备永远收不到消息。
 
-**修法（Steinberg 的老"开关"机制）**：安装目录里有个 `midi port enabler` 文件夹，里面是两个
-**零字节标记文件**；把需要的那个**往上挪一层**到主程序目录（例如 `F:\Steinberg\Nuendo 15\`），然后**重启 Nuendo**：
+**修法（推荐，实测有效）：重启 Windows MIDI 服务。**
+判据同上：如果新建端口**只有 DirectMusic** 一条，说明 Windows 的 MIDI 服务还没把它包装成新式设备
+（loopMIDI 的虚拟端口不产生 PnP 到达事件，所以服务不重启就永远看不见它）：
 
-- `ignoreportfilter` —— 让 Nuendo 忽略端口过滤（显示所有 Windows MIDI 端口）。
-- `enableemulated` —— 启用被标记为"模拟"的端口。
+```powershell
+# 管理员 PowerShell：先退出 DAW，再执行
+Restart-Service midisrv
+```
 
-出处：Steinberg 论坛帖子引用的官方 KB *MIDI issues on Windows*（[帖子](https://forums.steinberg.net/t/extra-settings/661993/9)：
-"These files are used as a sort of 'switch'. To use these 'switches' just move the desired file from the
-folder 'midi port enabler' one level up to the main application directory"）。
-回滚 = 删掉主目录里的那两份副本。
+做完后 port 会多出 `I|Windows MIDI|<端口名>` 一条 ✓（`Windows MIDI` 才是 MIDI Remote 用的那套枚举），
+再重启 DAW 即可。**重启 DAW 本身没用**——枚举的是服务已经准备好的列表。
+
+> 若 `Restart-Service` 被拒（某些系统把 `midisrv` 设为不可停止），重启 Windows 等效（服务是自动启动的）。
+
+**另一条老办法（只在上面无效时试）：`midi port enabler` 开关。**
+安装目录 `midi port enabler` 文件夹里是两个零字节标记文件，Steinberg 的 KB 说把它们**往上挪一层**到主程序目录
+（[论坛引用](https://forums.steinberg.net/t/extra-settings/661993/9)："These files are used as a sort of 'switch'"）。
+
+- ⚠️ **只挪 `ignoreportfilter`**（忽略端口过滤）。KB 原文也确实写着 "Only move the ignoreportfilter file"。
+- ⚠️ **不要挪 `enableemulated`**：它会把"模拟端口"一并列出，结果是**你机器上每个端口都多出一份【模拟】副本**
+  （真机上踩过，而且副本会让 MIDI Remote 的按名匹配出现歧义）。
+- 回滚 = 删掉主目录里的那份副本（原文件留在 `midi port enabler\` 里）。
 
 **替代路线**（不依赖端口枚举，推荐作为退路）：保留一个端口（`loopMIDI Port`，已验证可用），
 把触发消息换成**音源不会理的类型**——例如 **Polyphonic Aftertouch**（128 个编号、编号仍从 36 起）
