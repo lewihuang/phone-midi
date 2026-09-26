@@ -262,6 +262,21 @@ function check(name, ok, detail) {
   check('pad: no tab bar until a layout with pages arrives',
     tabs.classList.contains('hidden') && tabs.children.length === 0,
     `${tabs.children.length} tab(s) before the first pad_layout`);
+  // 用户："六个页面的选择按钮大小固定，分为两行，每行三个，命名文本在自己的范围内居中"
+  const padCss = fs.readFileSync(web('ios.css'), 'utf8');
+  const tabsRule = (padCss.match(/#tabs\s*\{[^}]*\}/) || [''])[0];
+  const tabRule = (padCss.match(/^\.tab\s*\{[^}]*\}/m) || [''])[0];
+  const padHtml2 = htmlOf('pad');
+  check('pad: 页签固定 2 行 × 3 列，格子等宽、行高固定（大小与文字长短无关）',
+    /grid-template-columns:\s*repeat\(3,\s*1fr\)/.test(tabsRule)
+    && /grid-auto-rows:\s*\d+px/.test(tabsRule)
+    && /\.tab\s*\{[^}]*height:\s*\d+px/.test(padCss)
+    // 页面自己的 <style> 若又写 display:flex 会把 grid 盖掉（样式表在 ios.css 之后加载）
+    && !/#tabs\s*\{[^}]*display:/.test(padHtml2),
+    `${(tabsRule.match(/grid-template-columns:[^;]*/) || [''])[0]}，页面未覆盖 display`);
+  check('pad: 页签文字在各自格子里居中（水平 text-align + 垂直 line-height）',
+    /text-align:\s*center/.test(tabRule) && /line-height:\s*\d+px/.test(tabRule),
+    '两轴都居中');
 
   const ws = sockets[0];
   check('pad: opens a WebSocket on /ws', !!ws && /\/ws$/.test(ws.url || ''), ws ? ws.url : 'no socket');

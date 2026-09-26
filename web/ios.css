@@ -405,15 +405,23 @@ a { color: var(--blue); text-decoration: none; }
 /* 松手后短暂保留的"已发出"痕迹：轻点一下也能看见（只压暗一点点，不加边框） */
 .cell.fired { filter: brightness(0.93); }
 
-/* 页签 = iOS 分段控件（Segment Control） */
+/* 页签 = iOS 分段控件，但**固定 2 行 × 3 列**（页数固定 6 页 = 48 个按钮，所以格子数也是固定的）。
+   六个格子等宽、行高固定 → 按钮大小与文字长短无关；文字在自己的格子里居中（水平 text-align、
+   垂直 line-height）。用户："六个页面的选择按钮大小固定，分为两行，每行三个，命名文本在自己的
+   范围内居中"。 */
 #tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 36px;
+  gap: 2px;
   background: var(--fill);
   border-radius: 10px;
   padding: 2px;
-  gap: 2px;
 }
 .tab {
-  padding: 7px 4px;
+  height: 36px;
+  padding: 0 6px;
+  line-height: 36px;              /* 行高 = 格高 → 垂直居中 */
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -421,6 +429,7 @@ a { color: var(--blue); text-decoration: none; }
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
+  text-align: center;             /* 水平居中 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

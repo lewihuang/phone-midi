@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Shortcut Pad</title>
-<link rel="stylesheet" href="ios.css?v=10">
+<link rel="stylesheet" href="ios.css?v=11">
 <style>
   /* 页面专属：单屏不滚动，网格固定 2 列 × 4 行（形状与 pad.js 的 COLS/ROWS 必须一致）。 */
   body { display: flex; flex-direction: column; gap: 10px;
@@ -18,7 +18,7 @@
   #grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px;
           grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(4, 1fr); }
   #grid.offline .cell { pointer-events: none; opacity: 0.4; }
-  #tabs { flex: 0 0 auto; display: flex; }
+  #tabs { flex: 0 0 auto; }   /* 2 行 × 3 列的 grid 在 ios.css 里；这里**不能**再写 display，会盖掉它 */
   #err { flex: 0 0 auto; min-height: 15px; font-size: 13px; color: var(--orange); margin: 0; }
   .foot { margin-top: 0; justify-content: flex-start; }
 </style>
