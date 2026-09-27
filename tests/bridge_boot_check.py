@@ -14,7 +14,10 @@ sys.path.insert(0, os.path.join(ROOT, "bridge"))
 import server                                  # for the socket-binding checks below
 PORT = 8791
 fails = []
+total = 0        # 自己数，别写死分母：这一版加了一条检查，写死的 "8" 会安静地说谎
 def check(name, ok, detail=""):
+    global total
+    total += 1
     print(("PASS  " if ok else "FAIL  ") + name.ljust(46) + detail)
     if not ok:
         fails.append(name)
@@ -62,6 +65,12 @@ try:
             check("serves the debug page", "segInterp" in lab and "vibrato-lab.js?v=" in lab, f"{len(lab)} bytes")
             ws_check = fetch("/vibrato-lab.js")
             check("serves the debug page script", "depthTrim" in ws_check, f"{len(ws_check)} bytes")
+            # 格子那一层是 pad.html 与推子页共用的新文件：它 404 的话，两处的按钮会一起哑掉——
+            # 而页面本身还是"看起来正常"的，所以必须有一条"真的服务得出来"的检查。
+            pgrid = fetch("/padgrid.js")
+            check("serves the shared grid script (padgrid.js)",
+                  "PhoneMidiPadGrid" in pgrid and "createGrid" in pgrid and "padgrid.js?v=" in idx,
+                  f"{len(pgrid)} bytes，fader.html 引到了它")
 
             # ── the reported bug: a second instance must NOT silently share the port ──
             # With SO_REUSEADDR (the old behaviour on Windows) a second Bridge bound the same
@@ -119,5 +128,5 @@ finally:
     except subprocess.TimeoutExpired:
         proc.kill()
 
-print(f"\n{8 - len(fails)}/8 checks passed")
+print(f"\n{total - len(fails)}/{total} checks passed")
 sys.exit(1 if fails else 0)

@@ -7,7 +7,8 @@
 <title>Shortcut Pad</title>
 <link rel="stylesheet" href="ios.css?v=11">
 <style>
-  /* 页面专属：单屏不滚动，网格固定 2 列 × 4 行（形状与 pad.js 的 COLS/ROWS 必须一致）。 */
+  /* 页面专属：单屏不滚动，网格固定 2 列 × 4 行（形状与 padgrid.js 的 COLS/ROWS 必须一致）。
+     面板是**铺满整屏**的那一个宿主；推子页底部的第 4 页条用的是同一份格子，但只占一小块。 */
   body { display: flex; flex-direction: column; gap: 10px;
          height: 100dvh; overflow: hidden; padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
          touch-action: manipulation; -webkit-user-select: none; user-select: none;
@@ -37,6 +38,8 @@
 <p id="err"></p>
 <p class="foot-brand">Powered by Levi黄</p>
 
-<script src="pad.js?v=29"></script>
+<!-- 格子本身（建格/绘制/按下/离线拒按/震动）与推子页底部的第 4 页条共用一份实现 -->
+<script src="padgrid.js?v=1"></script>
+<script src="pad.js?v=30"></script>
 </body>
 </html>

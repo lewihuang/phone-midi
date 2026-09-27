@@ -14,6 +14,11 @@
 
 _Avoid_：用"模式"指模块（模式是 Digital Fader 内部的 A/B/C）；用"推子"单独指某个模块（三个模块都在"推"东西）。
 
+**唯一一处刻意跨模块的地方**：Digital Fader 的**运行界面**底部镜像 Shortcut Pad 的**第 4 页**八格
+（"CC 廊条"），因为用推子时手就在手机上，顺手就能让 DAW 显示某条参数的 CC 廊（见 [spec §10](docs/spec/shortcut-pad.md)）。
+这不是"模块互相依赖"：推子不读面板的代码也不写面板的配置，它只是**同一份布局 + 同一条触发链路**的第二个显示位。
+术语仍归 Shortcut Pad（Trigger / Trigger ID / 页），推子页不新增概念。
+
 ## 领域概念
 
 ### Sensor Source（传感器源）
@@ -106,6 +111,7 @@ _Avoid_：用"模式"指模块（模式是 Digital Fader 内部的 A/B/C）；�
 | **Macro（宏）** | DAW 侧由若干命令组成的操作序列（如"把当前轨道变红"） | **手机不感知宏的存在**；宏只活在 DAW 里，手机只发触发编号 |
 | **Layout Push（布局下发）** | Bridge → 手机的单向推送：按钮的文字、颜色、页标题 | **v1 必做**。数据源是 Bridge 自己（唯一写入方），手机不写回 |
 | **State Read-back（状态回读）** | DAW → Bridge → 手机：把 DAW 的状态（宏是否生效、轨道名、走带）显示在手机上 | **v1 不做**。需要 Bridge 具备 MIDI 输入，是另一条链路 |
+| **CC 廊条（CC Lane Strip）** | Digital Fader **运行界面**底部那八格：Shortcut Pad **第 4 页**的镜像（编号固定 24–31），A/B 模式才出现 | 不是新模块、也不是第二份配置：内容仍由 Layout Push 下发，按下仍是一个 Trigger。用户约定"第 4 页 = CC 廊的显示开关"，映射在 DAW 里做 |
 
 _Avoid_：用"快捷键"指面板按钮（快捷键＝DAW 的 Key Command，是 DAW 侧概念）；用"宏"指手机上的按钮（宏在 DAW 侧）；
 用"命令"同时指这两者；**用"同步/反馈"同时指布局下发与状态回读**——它们是反方向的两种东西，
@@ -113,4 +119,4 @@ _Avoid_：用"快捷键"指面板按钮（快捷键＝DAW 的 Key Command，是 
 
 ---
 
-*最后更新: 2026-09-26（新增 Modules 一节；X/Y Pad 术语与 Landing / Drag / Recentre / Position Marker）*
+*最后更新: 2026-09-27（新增 CC 廊条；Modules 一节记下唯一一处刻意跨模块）*

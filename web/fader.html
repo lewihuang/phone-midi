@@ -10,7 +10,9 @@
   /* 页面专属：单栏 360px。面板切换靠 .hidden / .show（app.js 在用这两个类名，必须保留）。 */
   body { display: flex; flex-direction: column; align-items: center; }
   .nav { width: 100%; max-width: 360px; }
-  .status { margin-bottom: 16px; }
+  /* 连接状态只在**运行界面**里出现（用户："选择 mode 的页面顶部那行永远是未连接，删了"）。
+     它现在住在 .runtime-head 里，设置界面根本不会显示——不需要脚本去藏它。 */
+  .status { flex: 0 0 auto; }
   .setup, .runtime { width: 100%; max-width: 360px; }
   .setup { display: flex; flex-direction: column; align-items: center; }
   .setup.hidden { display: none; }
@@ -22,15 +24,13 @@
   .runtime-mode strong { color: var(--label); }
   .cal-row.hidden { display: none; }
   .pitch-display { margin: 4px 0 18px; }
-  .pitch-value { font-size: 72px; }
+  /* 大数字 = 当前值。用户："cc 值显示的数字字体过大，缩小一半"（原 72px）。 */
+  .pitch-value { font-size: 36px; }
   /* 进度条：早期版本就是这条——**必须有宽度**，否则在 align-items:center 的列里会被压成 0 宽看不见 */
   .bar-wrap { width: 100%; height: 12px; margin: 0 0 18px; }
-  /* 映射行与 CC 行各给足高度，不要挤到一起 */
-  .cc-row { width: 100%; margin: 2px 0 12px; line-height: 1.7; }
-  .cc-row > span { padding: 2px 0; }
+  /* 原来的"映射 CCx Chx → 值"那一行已删（用户："进度条下一行……删掉"）：CC/Ch 在下面的配置行里
+     还能改，值就是上面那个大数字，这一行只是把同一件事说了两遍。 */
   .cfg-row { width: 100%; margin-top: 10px; row-gap: 10px; }
-  .cc-tag { background: var(--fill); padding: 3px 8px; border-radius: 6px; color: var(--blue); }
-  .cc-val { font-weight: 600; }
   .btn { width: 100%; margin-top: 12px; }
   .btn.send-on, .btn.send-off { max-width: 160px; margin-top: 0; flex: 1; }
   .btn-row { width: 100%; margin-top: 18px; }
@@ -40,15 +40,27 @@
   .range-input { width: 58px; min-height: 32px; text-align: center; font-family: var(--mono); }
   .error { margin-top: 10px; }
   .shake-note { margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  /* 第 4 页（CC 廊）条：Shortcut Pad 第 4 页的**镜像**，摆在运行界面底部。
+     2 列 × 4 行与那一页同构（位置一一对应，肌肉记忆一致），但**不铺满**——它只是"顺手按得到"
+     的一小块，推子页的主角仍然是推子。格子压到 46px 高（仍高于 44px 的可点下限）、整块 225px。
+     尺寸是**量出来的**，不是估的：390×844 下推子自身内容约 600px，加上这一块共 838px，
+     正好落在下面的空白里，不产生滚动（52px 那一版会多出 30px，页面就得滚一下）。
+     与面板页一样，按下的证据是形变+变暗、松手后留 220ms 痕迹（D22/D27），没有描边。 */
+  .cc-lane { width: 100%; margin-top: 12px; }
+  .cc-lane.hidden { display: none; }
+  .cc-lane-title { margin: 0 0 4px; font-size: 13px; color: var(--label-2); text-align: center;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cc-lane-grid { display: grid; gap: 6px;
+                  grid-template-columns: repeat(2, 1fr); grid-auto-rows: 46px; }
+  .cc-lane-grid .cell { font-size: 16px; }
+  .cc-lane-grid.offline .cell { pointer-events: none; opacity: 0.4; }
   .brand { position: fixed; bottom: 10px; right: 12px; font-size: 10px; color: var(--label-3);
            text-align: right; line-height: 1.4; }
 </style>
 </head>
 <body>
 
-<nav class="topbar"><a class="btn-back" href="/">‹ 返回</a></nav>
-
-<div class="status off" id="status">● 未连接</div>
+<nav class="topbar"><a class="btn-back" id="btnBack" href="/">‹ 返回</a></nav>
 
 <div class="setup" id="setupPanel">
 
@@ -81,8 +93,10 @@
 
 <div class="runtime" id="runtimePanel">
 
+  <!-- 运行中：左边连接状态、右边模式名。**这里不再有返回键**（用户："嵌套了两个返回键"）——
+       整页只有左上角那一个返回键，运行中它退回本页的模式选择（见 app.js 的 btnBack 处理）。 -->
   <div class="runtime-head">
-    <button type="button" class="btn-back" id="btnBack" onclick="returnToSetup()">‹ 返回</button>
+    <div class="status off" id="status">● 未连接</div>
     <div class="runtime-mode">运行中 · <strong id="runtimeModeName">抬手推子</strong></div>
   </div>
 
@@ -92,13 +106,6 @@
 
   <div class="bar-wrap">
     <div class="bar-fill" id="bar" style="width: 50%"></div>
-  </div>
-
-  <div class="cc-row">
-    <span>映射</span>
-    <span class="cc-tag" id="ccTag">CC1 Ch1</span>
-    <span>→</span>
-    <span class="cc-val" id="ccVal">—</span>
   </div>
 
   <p class="shake-note" id="modeNote" style="display:none"></p>
@@ -122,9 +129,19 @@
     <button class="btn send-on" id="btnSend" onclick="toggleSend()">发送中</button>
   </div>
 
+  <!-- 第 4 页（CC 廊）的八格：内容与编号都由 Bridge 下发（Layout Push），这里只是它的镜像。
+       只在 A/B 的运行界面出现——C 要摇晃手机，按不了屏幕；布局没到就整块不显示
+       （八个没有内容的空格子比没有更糟）。 -->
+  <div class="cc-lane hidden" id="ccLane">
+    <p class="cc-lane-title" id="ccLaneTitle"></p>
+    <div class="cc-lane-grid" id="ccLaneGrid"></div>
+  </div>
+
 </div>
 
 <p class="foot-brand">Powered by Levi黄</p>
+
+<script src="padgrid.js?v=1"></script>
 
 <script src="fusion.js?v=23"></script>
 
@@ -132,7 +149,7 @@
      itself is no longer wired to any mode (it lives on /vibrato-lab.html for experiments). -->
 <script src="vibrato.js?v=23"></script>
 
-<script src="app.js?v=25"></script>
+<script src="app.js?v=26"></script>
 
 </body>
 </html>

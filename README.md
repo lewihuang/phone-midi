@@ -65,6 +65,11 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
 
 ## 文档
 
+> **要迁移到另一台电脑、或想知道"手机上每个按钮到底做了什么"** → 看
+> **[docs/guide/README.md](docs/guide/README.md)（使用与迁移手册·单文件版）**：
+> 依赖链、功能清单（六页按钮 ↔ Note ↔ DAW 命令/宏）、六个搭建阶段、分层排查表、
+> 以及"哪三项做不到无损迁移"。整篇不依赖脚本，版本差异由读者按自己机器核对。
+
 - `CONTEXT.md` — 领域术语表
 - `docs/adr/0001-web-first-architecture.md` — 架构决策
 - `docs/adr/0002-json-mapping-config.md` — 映射配置格式

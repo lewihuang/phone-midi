@@ -7,10 +7,11 @@ import { web } from './_paths.mjs';
 const pages = {
   home: { html: 'index.html', scripts: [] },
   xy: { html: 'xy.html', scripts: ['xy.js'] },
-  fader: { html: 'fader.html', scripts: ['fusion.js', 'vibrato.js', 'app.js'] },
+  // 格子那一层（建格/绘制/按下/离线拒按/震动）在 padgrid.js 里，pad.html 与推子页共用它
+  fader: { html: 'fader.html', scripts: ['padgrid.js', 'fusion.js', 'vibrato.js', 'app.js'] },
   lab: { html: 'vibrato-lab.html', scripts: ['vibrato.js', 'vibrato-lab.js'] },
   latency: { html: 'latency.html', scripts: ['fusion.js', 'latency.js'] },
-  pad: { html: 'pad.html', scripts: ['pad.js'] },
+  pad: { html: 'pad.html', scripts: ['padgrid.js', 'pad.js'] },
   calFlip: { html: 'calibrate-flip.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calLift: { html: 'calibrate-lift.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calShake: { html: 'calibrate-shake.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
@@ -166,17 +167,43 @@ function check(name, ok, detail) {
     /class="btn btn-primary" id="calLink"/.test(h) && !/class="link-cal"/.test(h),
     '校准抬手范围 = 主按钮样式');
   check('fader: 运行界面删掉了 lift(cc) 那一行',
-    !/id="unitLabel"/.test(hTags), '只留大数值 + 进度条 + 映射行');
+    !/id="unitLabel"/.test(hTags), '只留大数值 + 进度条');
   check('fader: 进度条有自己的宽度（看得见推子状态）',
     /\.bar-wrap\s*\{[^}]*width:\s*100%/.test(h) && /id="bar"/.test(h),
     '早期版本那条进度条回来了');
   check('fader: 手机端不再暴露延迟诊断入口（页面还在，只是不摆在界面上）',
     !/latency\.html/.test(h), '延迟页仍可用 /latency.html 直接打开');
-  check('fader: 映射行与 CC 行各自留了高度',
-    /\.cc-row\s*\{[^}]*line-height/.test(h) && /\.cfg-row\s*\{[^}]*row-gap/.test(h),
-    '不会挤到一起');
-  check('fader: 左上角有统一的返回按钮（回首页）',
-    /<nav class="topbar"><a class="btn-back" href="\/">/.test(h), '‹ 返回');
+
+  // ── 2026-09-27 用户逐条提的四件事 ────────────────────────────────────────────
+  // ① 设置界面的连接状态永远是"未连接"→ 那一行不该出现在这儿。做法是把它挪进运行界面
+  //   （`#status` 现在是 `.runtime-head` 里的一员），所以设置界面根本不会渲染它。
+  check('fader: 连接状态只在运行界面出现（选择 mode 的页面不再有"未连接"那一行）',
+    h.indexOf('id="runtimePanel"') < h.indexOf('id="status"')
+    && !/id="status"/.test(h.slice(0, h.indexOf('id="runtimePanel"'))),
+    '状态胶囊住进了运行界面的头部（左：状态 / 右：模式名）');
+  // ② 运行界面里原来还有第二个"‹ 返回"，与左上角那个挨着却行为不同（一个回首页、一个回模式选择）。
+  //   现在整页只有一个返回键，且运行中它退回**上一层**（模式选择）。
+  const appSrc = fs.readFileSync(web('app.js'), 'utf8');
+  check('fader: 整页只有一个返回键（运行界面里那个嵌套的已删）',
+    (h.match(/class="btn-back"/g) || []).length === 1
+    && /<nav class="topbar"><a class="btn-back" id="btnBack" href="\/">/.test(h),
+    `${(h.match(/class="btn-back"/g) || []).length} 个 btn-back`);
+  check('fader: 运行中那个返回键退回模式选择（不是回首页）',
+    /function onBackClick\(ev\)[\s\S]{0,400}?returnToSetup\(\)/.test(appSrc)
+    && /elBtnBack\.addEventListener\('click', onBackClick\)/.test(appSrc),
+    'href 只在设置界面生效，运行中被拦下来走 returnToSetup()');
+  // ③ 大数字（当前值）字号减半：72px → 36px
+  check('fader: 当前值的数字缩小一半（72px → 36px）',
+    /\.pitch-value\s*\{\s*font-size:\s*36px/.test(h) && /id="pitchDeg"/.test(h),
+    '36px = 原 72px 的一半');
+  // ④ 进展条下面那行"映射 CCx Chx → 值"删掉：CC/Ch 在配置行里还能改，值就是上面那个大数字
+  check('fader: 进度条下面那行"映射 CCx Chx"已删（页面与脚本里都不再引用）',
+    !/id="ccTag"/.test(hTags) && !/id="ccVal"/.test(hTags) && !/cc-row/.test(hTags)
+    && !/elCcTag|elCcVal/.test(appSrc),
+    '标记、CSS、app.js 三处一起清掉（留着任何一处都会在运行时抛错）');
+  check('fader: 配置行（CC / Ch / 范围）与它的高度都还在',
+    /\.cfg-row\s*\{[^}]*row-gap/.test(h) && /id="selCc"/.test(h) && /id="selCh"/.test(h),
+    '删的是显示行，不是配置行');
 }
 
 {
@@ -247,14 +274,20 @@ function check(name, ok, detail) {
   const release = (i, pointerId) => grid.children[i].dispatch('pointerup', { pointerId });
 
   check('pad: 8 cells', grid.children.length === 8, `${grid.children.length} cells`);
-  // 形状必须两端一致：CSS 定形状、pad.js 定编号顺序，改一个不改另一个就是错的
+  // 形状必须两端一致：CSS 定形状、padgrid.js 定编号顺序，改一个不改另一个就是错的
   const padHtml = htmlOf('pad');
+  const gridScript = fs.readFileSync(web('padgrid.js'), 'utf8');
   const padScript = fs.readFileSync(web('pad.js'), 'utf8');
-  check('pad: 2 columns × 4 rows, CSS and pad.js agree',
+  check('pad: 2 columns × 4 rows, CSS and padgrid.js agree',
     /grid-template-columns:\s*repeat\(2,\s*1fr\)/.test(padHtml)
     && /grid-template-rows:\s*repeat\(4,\s*1fr\)/.test(padHtml)
-    && /const COLS = 2;/.test(padScript) && /const ROWS = 4;/.test(padScript),
-    'CSS 2×4 = pad.js COLS/ROWS');
+    && /const COLS = 2;/.test(gridScript) && /const ROWS = 4;/.test(gridScript),
+    'CSS 2×4 = padgrid.js COLS/ROWS');
+  // 重构的守卫：面板与推子页底部那条**共用一份格子实现**，不许再长出第二份建格/按下逻辑
+  check('pad: 格子逻辑只有一份（pad.js 用 padgrid.js，不再自己建格/绑按下）',
+    /PhoneMidiPadGrid/.test(padScript) && !/function buildCells/.test(padScript)
+    && !/addEventListener\('pointerdown'/.test(padScript),
+    'pad.js 只管面板：6 页 / 页签 / 布局下发 / 重连');
   check('pad: cells carry only their label (no note badge on the phone)',
     grid.children.every((c) => c.children.length === 1)
     && grid.children.map((_c, i) => cellText(i)).every((t) => !/^N\d+$/.test(t)),
@@ -357,6 +390,118 @@ function check(name, ok, detail) {
   check('pad: a disconnect releases held buttons and goes offline',
     ws.sent.length === n + 1 && ws.sent.at(-1).phase === 'up' && grid.classList.contains('offline'),
     `${ws.sent.at(-1).phase} then offline`);
+}
+
+// ── 推子页底部的第 4 页（CC 廊）条 ───────────────────────────────────────────
+// 用户：用 A/B 推子的时候，手机页面底下那片空白正好放面板第 4 页的八格，
+// 顺手就能让 DAW 把某条参数的 CC 廊显示出来（编号 24–31 由用户在 DAW 侧映射成命令）。
+// 它**不新开链路**：内容来自 Bridge 已经在下发的 pad_layout，一次按下还是 {kind:'trigger', id}。
+{
+  const f = loadPage('fader');
+  const strip = f.win.document.getElementById('ccLane');
+  const stripGrid = f.win.document.getElementById('ccLaneGrid');
+  const stripTitle = f.win.document.getElementById('ccLaneTitle');
+  const faderHtml = htmlOf('fader');
+  const gridScript = fs.readFileSync(web('padgrid.js'), 'utf8');
+  const cellText = (i) => stripGrid.children[i].children[0].textContent;
+  const press = (i, pointerId) => stripGrid.children[i].dispatch('pointerdown', { pointerId, preventDefault() {} });
+  const release = (i, pointerId) => stripGrid.children[i].dispatch('pointerup', { pointerId });
+
+  check('fader: 底部有第 4 页条，八格与面板同构（2 列 × 4 行 / COLS 取自 padgrid.js）',
+    !!stripGrid && stripGrid.children.length === 8
+    && /\.cc-lane-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*1fr\)/.test(faderHtml)
+    && /const COLS = 2;/.test(gridScript) && /const ROWS = 4;/.test(gridScript),
+    `${stripGrid.children.length} 格，CSS 2 列`);
+  // 用户："不能复用已有的（铺满全屏的）布局，我只需要占据很小的一块范围"
+  check('fader: 这一块**不铺满**整屏（行高固定，不抢剩余空间）',
+    /\.cc-lane-grid\s*\{[^}]*grid-auto-rows:\s*\d+px/.test(faderHtml)
+    && !/\.cc-lane\s*\{[^}]*flex:\s*1/.test(faderHtml)
+    && !/\.cc-lane-grid\s*\{[^}]*grid-template-rows/.test(faderHtml),
+    '格子高 46px、整块 225px（390×844 下与推子自身内容合计 838 < 844，不产生滚动）');
+  check('fader: 布局没到之前整块收起来（不摆八个没有内容的空格子）',
+    strip.classList.contains('hidden'), 'hidden 直到 pad_layout 到达');
+
+  // 唯一的返回键：**设置**界面不拦截，让 <a href="/"> 自己回首页
+  const backBtn = f.win.document.getElementById('btnBack');
+  let backPrevented = false;
+  backBtn.dispatch('click', { preventDefault() { backPrevented = true; } });
+  check('fader: 设置界面的返回键就是普通链接（脚本不接管，按 href 回首页）',
+    !backPrevented, '没启动时点它不该有任何拦截');
+
+  await f.win.start();
+  const ws = f.sockets[0];
+  const triggers = () => ws.sent.filter((m) => m.kind === 'trigger');
+
+  // 还没连上：按下什么都不发，也不给"已确认"的手感（和面板页同一套规矩）
+  press(0, 5);
+  check('fader: 未连接时按下不发消息、也不震动',
+    triggers().length === 0 && f.buzzes.length === 0, `${triggers().length} 条，震动 ${f.buzzes.length} 次`);
+
+  ws.readyState = 1; ws.onopen();
+  const pages = Array.from({ length: 6 }, (_, i) => ({ title: '页' + (i + 1), cells: [] }));
+  pages[3] = { title: 'cc廊', cells: [
+    { text: '音量', color: '#007aff', ink: '#ffffff' },
+    { text: '声像', color: '#ffffff', ink: '#1c1e26' },
+  ] };
+  ws.onmessage({ data: JSON.stringify({ type: 'pad_layout', layout: { pages } }) });
+
+  check('fader: 布局到达后露面，标题与八格跟着第 4 页走',
+    !strip.classList.contains('hidden') && stripTitle.textContent === 'cc廊'
+    && cellText(0) === '音量' && stripGrid.children[0].style.background === '#007aff',
+    `标题「${stripTitle.textContent}」，首格「${cellText(0)}」`);
+  check('fader: 画的是**第 4 页**（别的页的内容一格都不许漏进来）',
+    cellText(1) === '声像' && cellText(2) === '' && cellText(7) === '',
+    '第 1/2/3 页的标题没有盖上来');
+  check('fader: 字色用 Bridge 下发的 ink（手机不做颜色推理）',
+    stripGrid.children[0].style.color === '#ffffff' && stripGrid.children[1].style.color === '#1c1e26',
+    `深底 ${stripGrid.children[0].style.color} / 白底 ${stripGrid.children[1].style.color}`);
+
+  press(0, 6);
+  check('fader: 按一格发的是第 4 页的编号 24（= 页号 3 × 8 + 序号 0，与面板同一条 Note）',
+    triggers().length === 1 && triggers()[0].id === 24 && triggers()[0].phase === 'down',
+    JSON.stringify(triggers()[0]));
+  check('fader: 按下也有震动确认（与面板同一档）',
+    f.buzzes.length === 1 && f.buzzes[0] === 25, `vibrate(${f.buzzes.join(', ')})`);
+  release(0, 6);
+  check('fader: 松开发配对的 up（DAW 里不留悬挂的 Note）',
+    triggers().length === 2 && triggers()[1].id === 24 && triggers()[1].phase === 'up',
+    JSON.stringify(triggers()[1]));
+  press(7, 7);
+  check('fader: 第八格是编号 31（整页 24–31）', triggers()[2].id === 31, JSON.stringify(triggers()[2]));
+  release(7, 7);
+
+  // 运行中的返回键：同一个键，这时它退回**上一层**（模式选择），而不是回首页
+  const setupPanel = f.win.document.getElementById('setupPanel');
+  const runtimePanel = f.win.document.getElementById('runtimePanel');
+  check('fader: 运行界面已经打开（下面两条要在运行中测）',
+    runtimePanel.classList.contains('show') && setupPanel.classList.contains('hidden'), '运行中');
+  backPrevented = false;
+  backBtn.dispatch('click', { preventDefault() { backPrevented = true; } });
+  check('fader: 运行中点同一个返回键 = 退回模式选择（上一层，不是回首页）',
+    backPrevented && !runtimePanel.classList.contains('show') && !setupPanel.classList.contains('hidden'),
+    `拦下了链接跳转 → 回到模式选择（status「${f.win.document.getElementById('status').textContent}」）`);
+
+  // Mode C 不摆这一块：摇晃手里的手机时按不了屏幕（用户在需求里点名的就是 A/B）
+  const pickMode = (id) => {
+    f.win.document.getElementById('modeSelect').value = id;
+    f.win.document.getElementById('modeSelect').dispatch('change', {});
+  };
+  const restart = async (id) => {
+    f.win.returnToSetup();
+    pickMode(id);
+    await f.win.start();
+    const sock = f.sockets.at(-1);
+    sock.readyState = 1; sock.onopen();
+    sock.onmessage({ data: JSON.stringify({ type: 'pad_layout', layout: { pages } }) });
+    return sock;
+  };
+
+  await restart('C');
+  check('fader: Mode C 不摆这一块（布局到了也不显示）',
+    strip.classList.contains('hidden'), 'C 要摇晃手机，按不了屏幕');
+  await restart('B');
+  check('fader: Mode B 又出现（A/B 都摆，不是一次性的）',
+    !strip.classList.contains('hidden') && cellText(0) === '音量', '同一份布局，换个模式即回来');
 }
 
 // ── the light theme itself ───────────────────────────────────────────────────

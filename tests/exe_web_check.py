@@ -97,7 +97,7 @@ def main():
         # here fails on every version bump while telling us nothing the byte comparison does not.
         # 注意：带脚本的页面现在是 fader.html（首页 index.html 只是模块列表，没有任何脚本）。
         src = open(os.path.join(WEB, 'fader.html'), encoding='utf-8').read()
-        pattern = r'(?:fusion|app|vibrato|latency|pad|calibrate-wizard)\.js\?v=\d+'
+        pattern = r'(?:fusion|app|vibrato|latency|pad|padgrid|calibrate-wizard)\.js\?v=\d+'
         want, have = set(re.findall(pattern, src)), set(re.findall(pattern, ih))
         check('packaged cache-busters match the source page',
               bool(want) and want == have,

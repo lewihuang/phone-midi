@@ -15,6 +15,14 @@
   // Mode C's DSP: 6-channel bandpass → channel selector → gate → 250 Hz interpolated output.
   const V = window.PhoneMidiVibrato;
 
+  // 快捷键格子：与 /pad.html 共用一份实现（建格/绘制/按下/离线拒按/震动/松手痕迹）。
+  // 推子页只用它画**第 4 页**那一小块——见下面的 CC_LANE_PAGE。
+  const P = window.PhoneMidiPadGrid;
+
+  // Shortcut Pad 的第 4 页固定给"CC 廊"：编号 24–31 在 DAW 侧映射成显示/隐藏 CC 廊的命令。
+  // 这是**约定**而不是配置（用户：这八格固定当 CC 廊的开关用）。
+  const CC_LANE_PAGE = 3;
+
 
 
   const elStatus = document.getElementById('status');
@@ -30,14 +38,14 @@
 
   const elRuntimeModeName = document.getElementById('runtimeModeName');
 
+  // 整页**唯一**的返回键（左上角）。设置界面按 href 回首页；运行中它退回本页的模式选择——
+  // 以前运行界面里还有一个"‹ 返回"，两个返回键挨在一起、行为还不一样（用户要求只留最上面那个）。
+  const elBtnBack = document.getElementById('btnBack');
+
   const elPitchDeg = document.getElementById('pitchDeg');
 
 
   const elBar = document.getElementById('bar');
-
-  const elCcTag = document.getElementById('ccTag');
-
-  const elCcVal = document.getElementById('ccVal');
 
   const elError = document.getElementById('error');
 
@@ -62,6 +70,12 @@
   const elInDepth = document.getElementById('inDepth');
 
   const elModeNote = document.getElementById('modeNote');
+
+  const elCcLane = document.getElementById('ccLane');
+
+  const elCcLaneTitle = document.getElementById('ccLaneTitle');
+
+  const elCcLaneGrid = document.getElementById('ccLaneGrid');
 
 
 
@@ -90,6 +104,9 @@
       desc: '自然垂手 ↔ 抬手最高 → CC 0–127',
       calibrateHref: '/calibrate-lift.html',
       calibrateLabel: '校准抬手范围',
+
+      // A/B 的运行界面里挂第 4 页那八格（C 要摇晃手机，按不了屏幕 —— 见 updateCcLane）
+      ccLane: true,
 
       inputMin: 0,
 
@@ -124,6 +141,8 @@
       desc: '固定肘部，翻转手掌 → CC 0–127',
       calibrateHref: '/calibrate-flip.html',
       calibrateLabel: '校准翻转范围',
+
+      ccLane: true,
 
       inputMin: 0,
 
@@ -219,6 +238,21 @@
   let pendingDisplay = null;
 
   let displayRafPending = false;
+
+  // 收到的第 4 页布局（Layout Push）。**没到之前整块不显示**：八个没有内容的空格子，
+  // 既认不出是干什么的，也点不出反馈。断线重连/PC 端改完布局都会重新下发。
+  let ccLanePage = null;
+
+  // 第 4 页那八格。与面板页共用 padgrid.js：编号仍由位置决定（第 4 页 = 24–31），
+  // 所以 DAW 侧的映射和面板第 4 页**是同一套**——在哪里按都发同一条 Note。
+  const ccGrid = (P && elCcLaneGrid) ? P.createGrid(elCcLaneGrid, {
+    page: CC_LANE_PAGE,
+    isConnected: () => !!ws && ws.readyState === WebSocket.OPEN,
+    send: (obj) => sendMessage(obj),
+    haptic: P.haptic,
+    onBlocked: (msg) => showError(msg),
+    onSent: () => showError(''),
+  }) : null;
 
 
 
@@ -391,13 +425,13 @@
 
     elPitchDeg.textContent = String(cc);
 
-    elCcVal.textContent = String(cc);
-
     elBar.style.width = (cc / 127 * 100).toFixed(1) + '%';
 
   }
 
 
+
+  /** 只更新"值"与进度条：原来还要写那一行"映射 CCx Chx"的标签与数值，那一行已按用户要求删掉。 */
 
   function updateCcDisplay(outputs) {
 
@@ -407,19 +441,11 @@
 
     if (o.cc === 'PB') {
 
-      elCcTag.textContent = 'Pitch Bend Ch' + (o.channel + 1);
-
-      elCcVal.textContent = o.value;
-
       elBar.style.width = (o.value / 16383 * 100).toFixed(1) + '%';
 
       elPitchDeg.textContent = o.value;
 
     } else {
-
-      elCcTag.textContent = 'CC' + o.cc + ' Ch' + (o.channel + 1);
-
-      elCcVal.textContent = o.value;
 
       elBar.style.width = (o.value / 127 * 100).toFixed(1) + '%';
 
@@ -519,32 +545,19 @@
 
 
 
-  let _pbTag = '';
-
   let _noteAt = 0;
 
 
 
   /** Cents → the centred bar + big number used for Mode C. */
+
   function updateVibratoDisplay(r) {
 
     if (!r) return;
 
     elPitchDeg.textContent = (r.cents >= 0 ? '+' : '') + r.cents.toFixed(1);
 
-    elCcVal.textContent = String(r.pb);
-
     elBar.style.width = (r.pb / 16383 * 100).toFixed(1) + '%';
-
-    const tag = 'Pitch Bend Ch' + (parseInt(elSelCh.value, 10) + 1);
-
-    if (tag !== _pbTag) {
-
-      _pbTag = tag;
-
-      elCcTag.textContent = tag;
-
-    }
 
   }
 
@@ -589,6 +602,34 @@
 
   }
 
+  // ── 第 4 页（CC 廊）条：面板那一页的镜像 ─────────────────────────────────────
+  //
+  // 为什么挂在推子页上：编曲时想让 DAW 显示某条参数的 CC 廊，本来得腾出手去够鼠标；
+  // 而推子页正跑着、手机就在手里，底部那片空白正好放得下这八格。
+  //
+  // 它**不新开协议、也不新开链路**：内容与编号都来自 Bridge 已经在下发的 `pad_layout`
+  // （推子页本来就是 /ws 的一个客户端，以前只是把这条消息忽略了），一次按下也还是
+  // `{kind:'trigger', id}` —— 与面板页走完全同一条路（ADR 0004）。
+  // 用户负责在 DAW 侧把这八格（编号 24–31）映射成"显示 XX 的 CC 廊"。
+
+  /** 把 Bridge 下发的布局里第 4 页那部分记下来并画上；没有第 4 页就整块不显示。 */
+  function applyPadLayout(layout) {
+    const pages = (layout && Array.isArray(layout.pages)) ? layout.pages : [];
+    const cfg = pages[CC_LANE_PAGE];
+    ccLanePage = (cfg && Array.isArray(cfg.cells)) ? cfg : null;
+    if (ccGrid) ccGrid.paint(ccLanePage);
+    if (elCcLaneTitle) elCcLaneTitle.textContent = (ccLanePage && ccLanePage.title) || '';
+    updateCcLane();
+  }
+
+  /** 只有 A/B 的**运行界面**才有这八格：C 要摇晃手机根本按不了屏幕；设置界面也不摆（那时还没连 Bridge）。 */
+  function updateCcLane() {
+    if (!elCcLane) return;
+    const m = MODES[currentMode];
+    const show = !!active && !!ccLanePage && !!(m && m.ccLane);
+    elCcLane.classList.toggle('hidden', !show);
+  }
+
 
 
   function syncBridgeFromRuntime() {
@@ -627,6 +668,9 @@
 
       showError('');
 
+      // 第 4 页那八格跟着连接状态走：连上了才能按（未连接时按下去不发消息、也不给震动）
+      if (ccGrid) ccGrid.setOffline(false);
+
       syncBridgeFromRuntime();
 
     };
@@ -647,6 +691,9 @@
 
         else if (msg.type === 'config') onConfigReceived(msg.config);
 
+        // 面板布局（Layout Push）：连接时推一次、PC 端改完广播一次。推子页只取第 4 页。
+        else if (msg.type === 'pad_layout') applyPadLayout(msg.layout);
+
       } catch (e) {}
 
     };
@@ -656,6 +703,9 @@
       if (active) setStatus('wait', '重连中...');
 
       else setStatus('off', '未连接');
+
+      // 先松开按住的格子（断了就发不出去了，Bridge 侧有 1 秒兜底），再断开引用
+      if (ccGrid) { ccGrid.releaseAll(); ccGrid.setOffline(true); }
 
       ws = null;
 
@@ -970,6 +1020,9 @@
 
     if (m.vibrato && elInDepth) elInDepth.value = String(vibratoSettings().depthTrim);
 
+    // 第 4 页那八格只属于 A/B（MODES[mode].ccLane）
+    updateCcLane();
+
   }
 
 
@@ -1031,8 +1084,6 @@
       elInMin.value = r.in_min != null ? r.in_min : 0;
 
       elInMax.value = r.in_max != null ? r.in_max : 1;
-
-      elCcTag.textContent = 'CC' + tgt.cc + ' Ch' + (tgt.channel + 1);
 
       if (!active) {
 
@@ -1390,6 +1441,12 @@
 
     }
 
+    // 回设置界面 = 这次推子用完了：松开按住的格子、八格变灰（收起来的只是面板，
+    // 下次启动时布局不会重发，所以状态要在这里复位，不能只靠 onclose）
+    if (ccGrid) { ccGrid.releaseAll(); ccGrid.setOffline(true); }
+
+    updateCcLane();
+
 
 
     elSetupPanel.classList.remove('hidden');
@@ -1405,8 +1462,6 @@
     setStatus('off', '未连接');
 
     elPitchDeg.textContent = '—';
-
-    elCcVal.textContent = '—';
 
     elBar.style.width = '50%';
 
@@ -1430,6 +1485,21 @@
 
     refreshModeSetup();
 
+  }
+
+
+
+  /**
+   * 整页**唯一**的返回键（左上角）。
+   *
+   * 设置界面按 `<a href="/">` 自己回首页；**运行中它退回本页的模式选择**（"上一层"，而不是回首页）——
+   * 用户原话：顶部那个直接退回主页、下一行那个才退回模式选择，两个返回键挨着还行为不同，
+   * 所以要"只保留最顶部那个，但它应当返回上一层"。运行界面里那个已经删掉。
+   */
+  function onBackClick(ev) {
+    if (!active) return;                                  // 设置界面：交给链接自己走
+    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+    returnToSetup();
   }
 
 
@@ -1464,9 +1534,15 @@
 
     refreshModeSetup();
 
+    // 第 4 页那条从一开始就由脚本决定收起：状态归脚本管，不靠 HTML 里的初始 class
+    updateCcLane();
+
     elSelCc.addEventListener('change', onCcChange);
 
     elSelCh.addEventListener('change', onCcChange);
+
+    // 唯一的返回键：运行中拦截，改成"退回上一层（模式选择）"
+    if (elBtnBack) elBtnBack.addEventListener('click', onBackClick);
 
     elInMin.addEventListener('change', onRangeChange);
 
