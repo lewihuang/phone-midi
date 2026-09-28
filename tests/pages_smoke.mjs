@@ -99,7 +99,9 @@ function loadPage(page) {
     WebSocket: function (url) {
       this.url = url; this.readyState = 0; this.sent = [];
       this.send = (s) => this.sent.push(JSON.parse(s));
-      this.close = () => {};
+      // 真浏览器里 close() 之后 readyState 立刻是 CLOSED(3)。桩必须照做，否则
+      // "断连时先松开按住的格子"这类**顺序** bug 在桩里永远看不见（app.js 的 returnToSetup）。
+      this.close = () => { this.readyState = 3; };
       sockets.push(this);
     },
     PhoneMidiFusion: null,
@@ -361,6 +363,24 @@ function check(name, ok, detail) {
   check('pad: a second cell uses its own id', ws.sent[2].id === 1, JSON.stringify(ws.sent[2]));
   release(1, 3);
 
+  // 同一格两根手指（真机上"宏停不下来"的来法之一）：一格 = 一个音符，只许发一条 down。
+  // 发两条 down 只配得出一条 up，DAW 里会永久留一条关不掉的 Note（Bridge 侧也挡了一道）。
+  // 此刻还在第 1 页（标题「轨道颜色」），所以第 3 格 = 编号 2。
+  const beforeTwo = ws.sent.length;
+  press(2, 7);
+  press(2, 8);                     // 第二根手指落在同一格
+  const twoDowns = ws.sent.slice(beforeTwo);
+  check('pad: 同一格第二根手指不再发第二条 down（第 1 页第 3 格 = 编号 2）',
+    twoDowns.length === 1 && twoDowns[0].id === 2 && twoDowns[0].phase === 'down',
+    JSON.stringify(twoDowns));
+  release(2, 8);                   // 先抬第二根
+  check('pad: 抬起任意一根就发一条 up（另一根还按着也照样松开）',
+    ws.sent.length === beforeTwo + 2 && ws.sent.at(-1).id === 2 && ws.sent.at(-1).phase === 'up',
+    JSON.stringify(ws.sent.at(-1)));
+  release(2, 7);                   // 第一根再抬起：不许再发第二条 up
+  check('pad: 另一根抬起时不再重复发 up（On/Off 严格一对一）',
+    ws.sent.length === beforeTwo + 2, `多发了 ${ws.sent.length - beforeTwo - 2} 条`);
+
   const beforeSwitch = buzzes.length;
   tabs.children[1].dispatch('click', {});
   check('pad: switching pages buzzes as well',
@@ -384,12 +404,30 @@ function check(name, ok, detail) {
     ws.sent.length === before && grid.children.length === 8 && cellText(0) === '播放',
     'forward compatible: state read-back can arrive later without breaking the pad');
 
-  press(0, 5);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const beforeClose = ws.sent.length;
+  press(0, 5);                        // 断线前正按着一格
+  check('pad: 断线前按下的那一格正常发出（后面才断）',
+    ws.sent.length === beforeClose + 1 && ws.sent.at(-1).phase === 'down',
+    JSON.stringify(ws.sent.at(-1)));
   const n = ws.sent.length;
+  ws.readyState = 3;                 // 真浏览器：onclose 触发时 socket 已经关了
   ws.onclose();
-  check('pad: a disconnect releases held buttons and goes offline',
-    ws.sent.length === n + 1 && ws.sent.at(-1).phase === 'up' && grid.classList.contains('offline'),
-    `${ws.sent.at(-1).phase} then offline`);
+  check('pad: 断线时不假装还能说话（socket 已关，一条都发不出去）且变灰',
+    ws.sent.length === n && grid.classList.contains('offline'),
+    `${ws.sent.length - n} 条消息，conn=「${win.document.getElementById('conn').textContent}」`);
+
+  // 断线时本地"还按着"的痕迹必须被清掉（dropHeld），否则重连后按同一格会只发出一个野 up。
+  await sleep(2300);                  // pad.js 的重连定时器（RECONNECT_MS = 2000）
+  const ws2 = sockets.at(-1);
+  check('pad: 断线后自己重连（新 socket）', ws2 !== ws && sockets.length === 2,
+    `${sockets.length} 个 socket`);
+  ws2.readyState = 1; ws2.onopen();
+  press(0, 6);
+  release(0, 6);
+  check('pad: 重连后按同一格是一对干净的 down+up（onclose 时清了残留记录）',
+    ws2.sent.length === 2 && ws2.sent[0].phase === 'down' && ws2.sent[1].phase === 'up',
+    JSON.stringify(ws2.sent));
 }
 
 // ── 推子页底部的第 4 页（CC 廊）条 ───────────────────────────────────────────
@@ -502,6 +540,18 @@ function check(name, ok, detail) {
   await restart('B');
   check('fader: Mode B 又出现（A/B 都摆，不是一次性的）',
     !strip.classList.contains('hidden') && cellText(0) === '音量', '同一份布局，换个模式即回来');
+
+  // 退回设置界面：**先松开按住的格子、再关 socket**。顺序反了（先 ws = null / 先 close）
+  // `releaseAll()` 就一条也发不出去，DAW 里会留下一条关不掉的 Note。桩里 close() 现在会
+  // 立刻把 readyState 置成 CLOSED，所以这条顺序错了就会被抓住。
+  const sockB = f.sockets.at(-1);
+  press(0, 11);
+  const beforeBack = sockB.sent.length;
+  f.win.returnToSetup();
+  check('fader: 退回设置界面时先发 up 再关 socket（按住的格子不会被丢下）',
+    sockB.sent.length === beforeBack + 1 && sockB.sent.at(-1).id === 24
+    && sockB.sent.at(-1).phase === 'up' && sockB.readyState === 3,
+    `${JSON.stringify(sockB.sent.at(-1))}，socket readyState=${sockB.readyState}`);
 }
 
 // ── the light theme itself ───────────────────────────────────────────────────

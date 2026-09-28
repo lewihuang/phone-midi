@@ -704,8 +704,9 @@
 
       else setStatus('off', '未连接');
 
-      // 先松开按住的格子（断了就发不出去了，Bridge 侧有 1 秒兜底），再断开引用
-      if (ccGrid) { ccGrid.releaseAll(); ccGrid.setOffline(true); }
+      // 断线时**只清本地痕迹**：socket 已经关了，发不出任何消息（`sendMessage` 也要求 OPEN）。
+      // MIDI 那一侧由 Bridge 兜：断连清扫 + D42 的"无记录的 up 也补一条 Note Off"。
+      if (ccGrid) { ccGrid.dropHeld(); ccGrid.setOffline(true); }
 
       ws = null;
 
@@ -1431,6 +1432,10 @@
 
 
 
+    // 回设置界面 = 这次推子用完了：**先把按住的格子松开、再关 socket**——顺序反了
+    // （先 `ws = null`）`releaseAll()` 就一条也发不出去，DAW 里会留下一条悬挂的 Note。
+    if (ccGrid) { ccGrid.releaseAll(); ccGrid.setOffline(true); }
+
     if (ws) {
 
       ws.onclose = null;
@@ -1440,10 +1445,6 @@
       ws = null;
 
     }
-
-    // 回设置界面 = 这次推子用完了：松开按住的格子、八格变灰（收起来的只是面板，
-    // 下次启动时布局不会重发，所以状态要在这里复位，不能只靠 onclose）
-    if (ccGrid) { ccGrid.releaseAll(); ccGrid.setOffline(true); }
 
     updateCcLane();
 

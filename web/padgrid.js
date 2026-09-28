@@ -52,7 +52,7 @@
    *   onBlocked    `(msg) => void`：可选，未连接时按下要提示什么。
    *   onSent       `() => void`：可选，真的按下去之后清掉提示。
    *
-   * 返回：`{ cells, page, setPage, paint, releaseAll, setOffline }`
+   * 返回：`{ cells, page, setPage, paint, releaseAll, dropHeld, setOffline }`
    */
   function createGrid(gridEl, opts) {
     const o = opts || {};
@@ -73,6 +73,22 @@
       el._firedTimer = setTimeout(() => el.classList.remove('fired'), FIRE_MS);
     }
 
+    /** 这一格上现在还按着哪几个指针（同一格可能落了两根手指）。 */
+    function pointersOn(cell) {
+      const out = [];
+      for (const [pid, h] of held) if (h.cell === cell) out.push(pid);
+      return out;
+    }
+
+    /** 关掉这一格：清掉它上面所有指针的记录，并且**只在真的发过 down 时**发一条 up。 */
+    function closeCell(h, flashIt) {
+      for (const pid of pointersOn(h.cell)) held.delete(pid);
+      if (!h.cell.open) return;
+      h.cell.open = false;
+      if (flashIt) flash(h.cell.el);
+      send({ kind: 'trigger', id: h.id, phase: 'up' });
+    }
+
     function bind(cell, slot) {
       cell.el.addEventListener('pointerdown', (ev) => {
         if (!isConnected()) { onBlocked('未连接 Bridge，按键不会发出'); return; }
@@ -80,6 +96,11 @@
         const id = triggerId(page, slot);
         held.set(ev.pointerId, { id, cell });
         try { cell.el.setPointerCapture(ev.pointerId); } catch (_) { /* not fatal */ }
+        // 这一格已经按着了（第二根手指、或丢了"松开"之后又按）：**不再发第二条 down**。
+        // 一格 = 一个音符：发两条 down 只配得出一条 up，DAW 里会永久留一条关不掉的 Note
+        // （见 docs/changelog/2026-09-28_pad-stuck-note.md）。Bridge 侧也挡了一道。
+        if (cell.open) return;
+        cell.open = true;
         cell.el.classList.add('pressed');
         cell.el.classList.remove('fired');
         buzz();                    // 手指按下的那一下，先确认，再发消息
@@ -90,9 +111,9 @@
       const release = (ev) => {
         const h = held.get(ev.pointerId);
         if (!h) return;
-        held.delete(ev.pointerId);
-        flash(h.cell.el);
-        send({ kind: 'trigger', id: h.id, phase: 'up' });
+        // 这一格上**任何一根**手指抬起都算松开：用户要的是"按下就响、抬手就停"，
+        // 而"另一根手指还压着所以不松"正是 DAW 里留下悬挂 Note 的那条路。
+        closeCell(h, true);
       };
       cell.el.addEventListener('pointerup', release);
       cell.el.addEventListener('pointercancel', release);
@@ -107,7 +128,7 @@
         const label = document.createElement('span');
         el.appendChild(label);
         gridEl.appendChild(el);
-        const cell = { el, label };
+        const cell = { el, label, open: false };   // open = 这一格发出过 down、还欠一条 up
         cells.push(cell);
         bind(cell, slot);
       }
@@ -136,9 +157,26 @@
     function releaseAll() {
       for (const [pointerId, h] of held) {
         held.delete(pointerId);
+        if (!h.cell.open) continue;      // 同一格的多根手指：只处理发过 down 的那一次
+        h.cell.open = false;
         flash(h.cell.el);
         send({ kind: 'trigger', id: h.id, phase: 'up' });
       }
+    }
+
+    /**
+     * 断线时用：**只清手机这边的按住痕迹**，一条消息都不发。
+     *
+     * 为什么不是 `releaseAll()`：`send()` 要求 socket 还 OPEN，而 `onclose` 那一刻它已经关了
+     * ——"先松开再断开引用"其实一个字节都发不出去（Bridge 侧的断连清扫与 1 秒兜底才是真兜底）。
+     * 这里做手机该做的那一半：别让残留的记录使下一次松手发出一个无主的 `up`。
+     */
+    function dropHeld() {
+      for (const h of held.values()) {
+        h.cell.open = false;
+        h.cell.el.classList.remove('pressed');
+      }
+      held.clear();
     }
 
     /** 换到第 i 页（返回是否真的换了）。同页重按不算换页——调用方据此决定要不要给手感。 */
@@ -162,6 +200,7 @@
       setPage,
       paint,
       releaseAll,
+      dropHeld,
       setOffline,
     };
   }

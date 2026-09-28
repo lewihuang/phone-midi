@@ -306,7 +306,9 @@ class SensorHandler:
         # Shortcut Pad: the layout lives here (single source of truth, pushed to every phone)
         # and the held set lets a lost "release" be cleaned up instead of hanging a Note On.
         self.pad_layout = load_pad_layout()
-        self._pad_held: dict[int, tuple[float, int]] = {}   # 触发编号 → (按下时刻, 当时发的音符)
+        # 触发编号 → (按下时刻, 当时发的音符, 按下它的那个客户端)。客户端要记下来：**某一个
+        # 页面断开时只松开它自己按着的键**，不能把另一台设备（或另一个页面）正按着的那格松开。
+        self._pad_held: dict[int, tuple[float, int, object]] = {}
         # X/Y Pad：两个 CC + 通道，随每条消息带上（多端/重连都不会用到过期配置）
         self.xy_config = load_xy_config()
 
@@ -339,6 +341,18 @@ class SensorHandler:
                 log.warning("PB 回中失败 ch %d: %s", ch, e)
         return done
 
+    def pb_all_centre(self, reason: str = "") -> int:
+        """把**所有 16 个通道**的弯音归中（启动/停止清场用）。
+
+        与 `pad_all_off` 同一个理由：这一刻 Bridge 不知道哪个通道还弯着（上一进程被强杀、
+        崩了），而弯音是 DAW 里的**绝对状态**——端口一关就再也回不去了，手机也不会补发。
+        已归中的通道再发一次 8192 是无副作用的，所以不做判断，直接扫一遍。
+        """
+        done = self.centre_pb(list(range(16)))
+        if done and reason:
+            log.info("弯音清场（%s）：16 个通道各发一次 8192", reason)
+        return len(done)
+
     async def pb_watchdog(self):
         """Centres any channel left bent by a phone that stopped sending."""
         while True:
@@ -358,7 +372,7 @@ class SensorHandler:
         """触发要发的音符：优先读布局（T2：编号与位置解绑），没有就退回 `36 + 编号`。"""
         return pad_note_in_layout(self.pad_layout, trigger_id)
 
-    def pad_note_on(self, trigger_id: int):
+    def pad_note_on(self, trigger_id: int, client=None):
         tid = int(trigger_id)
         note = self.pad_note(tid)
         # 同一格被第二次按下：**只刷新兜底计时，不再发第二条 Note On**。
@@ -369,8 +383,9 @@ class SensorHandler:
         # 真机上的三种来法：两根手指压同一格、面板页与推子页第 4 页条同时按同一编号、
         # 丢了"松开"之后 1 秒内重按。见 docs/changelog/2026-09-28_pad-stuck-note.md。
         if tid in self._pad_held:
-            _at, held_note = self._pad_held[tid]
-            self._pad_held[tid] = (time.monotonic(), held_note)
+            _at, held_note, owner = self._pad_held[tid]
+            # 记录仍归**第一个**客户端：先按下的那个人还按着，后来者不该把它抢走。
+            self._pad_held[tid] = (time.monotonic(), held_note, owner)
             log.info("快捷键触发 %d 重复按下（Note %d 已发过）：只刷新兜底计时，不再发 Note On",
                      tid, held_note)
             return
@@ -381,7 +396,7 @@ class SensorHandler:
             return
         # Remember the note we actually sent: if the layout is edited while the button is held,
         # the release must still close *that* note, not whatever the cell says now.
-        self._pad_held[tid] = (time.monotonic(), note)
+        self._pad_held[tid] = (time.monotonic(), note, client)
         self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
 
     def pad_note_off(self, trigger_id: int) -> bool:
@@ -431,7 +446,8 @@ class SensorHandler:
 
     def pad_held_expired(self, now: float | None = None) -> list[int]:
         t = time.monotonic() if now is None else now
-        return [tid for tid, (at, _note) in self._pad_held.items() if t - at > PAD_HOLD_GUARD_SEC]
+        return [tid for tid, (at, _note, _client) in self._pad_held.items()
+                if t - at > PAD_HOLD_GUARD_SEC]
 
     async def pad_watchdog(self):
         """Release triggers whose 'up' never arrived (page closed, WiFi drop, tab killed).
@@ -449,7 +465,19 @@ class SensorHandler:
     def release_all_triggers(self):
         for tid in list(self._pad_held): self.pad_note_off(tid)
 
-    async def _on_trigger(self, obj: dict):
+    def release_triggers_of(self, client) -> int:
+        """只松开**这个客户端**按着的键。
+
+        为什么不能一律 `release_all_triggers()`：真机上同时开着面板页与推子页（日志里最多 3 个
+        客户端），任何一个页面断开都把所有按住的键松开，会把**另一台设备正按着**的那一格也放掉
+        ——用户看到的就是"按着按着突然自己松了"。断开只该收回自己那一份。
+        """
+        mine = [tid for tid, (_at, _note, owner) in self._pad_held.items() if owner is client]
+        for tid in mine:
+            self.pad_note_off(tid)
+        return len(mine)
+
+    async def _on_trigger(self, obj: dict, client=None):
         trigger_id = obj.get("id")
         if not pad_trigger_valid(trigger_id):
             log.warning("忽略越界的触发编号：%r（有效范围 0-%d）", trigger_id, pad_trigger_count() - 1)
@@ -458,7 +486,7 @@ class SensorHandler:
         if str(obj.get("phase", "down")).lower() == "up":
             self.pad_note_off(trigger_id)
         else:
-            self.pad_note_on(trigger_id)
+            self.pad_note_on(trigger_id, client)
 
     async def _on_xy(self, obj: dict):
         """X/Y Pad：一条消息 = 两条 7-bit CC（同端口、同通道，两个可配的 CC 号）。
@@ -524,7 +552,7 @@ class SensorHandler:
             gone = self.centre_pb()
             if gone:
                 log.warning("手机断开，通道 %s 归中", ", ".join(str(c + 1) for c in gone))
-            self.release_all_triggers()
+            self.release_triggers_of(ws)
             log.info("Phone disconnected: %s (%d clients)", request.remote, len(self._clients))
         return ws
 
@@ -549,7 +577,8 @@ class SensorHandler:
         elif obj.get("kind") == "trigger":
             # Shortcut Pad: a discrete trigger, not a value. It never touches the mapping engine
             # (no range, no curve, no smoothing) — it becomes one MIDI Note (ADR 0004).
-            await self._on_trigger(obj)
+            # 带上客户端：断开时只回收它自己按着的键（见 release_triggers_of）。
+            await self._on_trigger(obj, ws)
         elif obj.get("kind") == "xy":
             # X/Y Pad: one message = two 7-bit CCs. Also bypasses the mapping engine (same
             # reasoning as the pad's triggers) — see docs/spec/xy-pad.md.
@@ -988,6 +1017,35 @@ def pad_duplicate_notes(layout) -> dict[int, int]:
             note = pad_note_in_layout(layout, page_index * PAD_SLOTS + slot)
             counts[note] = counts.get(note, 0) + 1
     return counts
+
+def _spawn_watchdogs(handler, loop=None):
+    """把两个看门狗排进**当前（或给定）正在运行的**事件循环。
+
+    放在一个函数里是因为"哪条兜底归哪个开关管"必须只有一个答案：
+      * **pad 的兜底无视 `pb_idle_sec`** —— 丢一次"松开"就会在 DAW 里留一条关不掉的 Note，
+        1 秒兜底是它唯一的自动出口，关掉弯音兜底不该顺手把它关掉（`--pb-idle-ms 0` 曾经就是）；
+      * 两者都必须在**有运行中的循环**时创建，否则任务会被挂到一个谁也不跑的循环上
+        （见 `register_watchdogs` 里那段踩坑记录）。
+    """
+    asyncio.ensure_future(handler.pad_watchdog(), loop=loop)
+    if handler.pb_idle_sec > 0:
+        asyncio.ensure_future(handler.pb_watchdog(), loop=loop)
+
+def register_watchdogs(app, handler):
+    """CLI 路径：挂到 `app.on_startup`，等真正在跑的那个循环起来再建任务。
+
+    真机上踩过的坑（日志里 51 条 `Task was destroyed but it is pending! … pad_watchdog`，
+    全部出现在 CLI 启动后 1 秒、GUI 启动之后 0 条）：以前是在 `_cli_mode` 里直接
+    `asyncio.ensure_future(handler.pad_watchdog())`，那一刻**没有运行中的循环**，
+    任务被挂到 `get_event_loop()` 顺手建出来的那个循环上；而 `web.run_app()` 会自己
+    `new_event_loop()`（aiohttp 源码已核对）——于是兜底任务永远不 tick，
+    **`--no-gui` 起 Bridge 的人等于没有兜底**。pb 那条一开始就挂在 on_startup 上，是对的。
+    """
+    async def _on_startup(_app):
+        # 不要在 on_startup 里 return 任务：aiohttp 会 await 它的返回值，
+        # 而看门狗是死循环，服务器就永远起不来（tests/bridge_boot_check.py 抓到过）。
+        _spawn_watchdogs(handler)
+    app.on_startup.append(_on_startup)
 
 def pad_swap_cells(layout, page_index: int, slot_a: int, slot_b: int) -> bool:
     """交换同一页里两格的**整格内容**（文字 + 颜色 + 音符）。
@@ -2122,6 +2180,7 @@ class BridgeApp:
                 # 上一次运行可能留下悬挂的 Note（被强杀、崩了、或旧版本的重复按下）：端口刚打开、
                 # 一个客户端都还没有，是清场最安全的时刻（见 pad_all_off）。
                 handler.pad_all_off("启动")
+                handler.pb_all_centre("启动")
                 ssl_context, protocol = self._ssl_for(base_dir)
                 app = web.Application()
                 app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
@@ -2167,11 +2226,9 @@ class BridgeApp:
         runner = web.AppRunner(app)
         loop.run_until_complete(runner.setup())
         loop.run_until_complete(web.SockSite(runner, sock, ssl_context=ssl_context).start())
-        if handler.pb_idle_sec > 0:
-            asyncio.ensure_future(handler.pb_watchdog(), loop=loop)
-        # A trigger whose "release" never arrives would hang a Note On in the DAW, so the pad
-        # gets its own guard regardless of the pitch-bend setting.
-        asyncio.ensure_future(handler.pad_watchdog(), loop=loop)
+        # GUI 路径：这个循环就在下面 run_forever，直接把任务排上去（CLI 路径走
+        # register_watchdogs —— 那里 run_app 会自己建循环，见那个函数的说明）。
+        _spawn_watchdogs(handler, loop=loop)
         self._loop = loop; self._runner = runner
         try:
             loop.run_forever()
@@ -2242,6 +2299,8 @@ class BridgeApp:
             if handler:
                 try: handler.pad_all_off("停止")
                 except Exception as e: log.warning("停止清场失败：%s", e)
+                try: handler.pb_all_centre("停止")
+                except Exception as e: log.warning("停止归中失败：%s", e)
             for m in (midi, pad_midi):
                 if m:
                     try: m.close()
@@ -2327,6 +2386,7 @@ def _cli_mode(args):
     handler = SensorHandler(engine, midi, pb_idle_sec=args.pb_idle_ms / 1000.0, pad_midi=pad_midi)
     # 上一次运行可能留下悬挂的 Note（被强杀、崩了、或旧版本的重复按下）：先清场再开门。
     handler.pad_all_off("启动")
+    handler.pb_all_centre("启动")
     app = web.Application()
     app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
     app.router.add_get("/ws", handler.handle); app.router.add_get("/status", handle_status)
@@ -2350,17 +2410,13 @@ def _cli_mode(args):
 
     log.info("%s://%s:%d", protocol, args.host, args.port)
     if args.pb_idle_ms > 0:
-        async def _start_watchdog(_app):
-            # Must NOT return the task: aiohttp awaits whatever an on_startup handler
-            # returns, so `lambda: ensure_future(...)` would await the infinite watchdog
-            # loop and the server would never start serving (found by tests/bridge_boot_check).
-            asyncio.ensure_future(handler.pb_watchdog())
-        app.on_startup.append(_start_watchdog)
-        # The pad's guard is independent of the PB setting: a lost trigger release would leave
-        # a Note On hanging in the DAW whatever `--pb-idle-ms` says.
-        asyncio.ensure_future(handler.pad_watchdog())
+        log.info("弯音守护开启（手机静默 %.0f ms 就归中）", args.pb_idle_ms)
     else:
-        log.info("PB 守护已关闭（--pb-idle-ms 0）：手机静默时 DAW 会停在最后的弯音值")
+        log.info("PB 守护已关闭（--pb-idle-ms 0）：手机静默时 DAW 会停在最后的弯音值；"
+                 "**面板兜底不受影响**，照常启动")
+    # 两个看门狗都挂 on_startup：pad 那条**不在**任何开关里面（丢一次"松开"就会在 DAW 里
+    # 留一条关不掉的 Note），而且必须等 run_app 自己的循环起来再建任务，见 register_watchdogs。
+    register_watchdogs(app, handler)
     try:
         try:
             sock = bind_server_socket(args.host, args.port)

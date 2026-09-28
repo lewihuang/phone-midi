@@ -94,3 +94,6 @@ def pad_note_off(self, tid):
 - `docs/spec/shortcut-pad.md`：§5 补协议规则；决策表补 **D42/D43**；§10.3 补两条验收。
 - `docs/guide/nuendo-shortcut-pad.md`：故障表里"松开后 Note 一直亮"那一行改成给出手动出口。
 - `bridge/dist/MIDI Deck.exe` 重打包（`server.py` 改了，跑的是 exe 的话必须换新的）。
+
+> 上面"本轮不修"里的第 1–5 条当天就接着修掉了（外加两条新查出来的：断开时误松开别人的键、
+> 停止时弯音不回中），见 [2026-09-28_pad-lifecycle-hardening.md](2026-09-28_pad-lifecycle-hardening.md)。

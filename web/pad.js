@@ -139,10 +139,9 @@
     ws.onmessage = onMessage;
     ws.onclose = () => {
       connected = false;
-      // Tell the Bridge we let go *before* dropping the socket reference: `send()` refuses to
-      // work without an open socket, so nulling first silently loses the "up" and leaves a
-      // hanging Note On for the Bridge's 1 s guard to clean up (found by tests/pages_smoke.mjs).
-      grid.releaseAll();
+      // 断线时**只清本地痕迹**：socket 已经关了，`releaseAll()` 在这里一个字节都发不出去
+      // （`send()` 要求 readyState 还是 OPEN）。MIDI 那一侧由 Bridge 兜：断连清扫 + 1 秒兜底。
+      grid.dropHeld();
       ws = null;
       setConn('off', '未连接');
       scheduleRetry();

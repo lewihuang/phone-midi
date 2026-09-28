@@ -331,6 +331,57 @@ check("清场：48 个触发编号全部补 Note Off，按住的记录一并清�
 check("清场：再补一条 CC123 All Notes Off（只作用在通道 16）",
       panic.midi.cc[-1] == (123, 15, 0), f"最后一条 {panic.midi.cc[-1]}")
 
+# ── 3f. 断开只收回自己那一份（别的页面正按着的键不许被松开） ────────────────────
+# 真机上同时开着面板页与推子页（日志里最多 3 个客户端）：以前任何一端断开都会
+# `release_all_triggers()`，会把另一台设备正按着的那一格也放掉（"按着按着突然自己松了"）。
+multi, _ = handler_with_midi()
+client_a, client_b = object(), object()
+asyncio.run(multi._on_trigger({"kind": "trigger", "id": 2, "phase": "down"}, client_a))
+asyncio.run(multi._on_trigger({"kind": "trigger", "id": 3, "phase": "down"}, client_b))
+check("按下时记下是哪个客户端按的",
+      multi._pad_held[2][2] is client_a and multi._pad_held[3][2] is client_b,
+      f"{ {k: type(v[2]).__name__ for k, v in multi._pad_held.items()} }")
+multi.midi.notes.clear()
+released = multi.release_triggers_of(client_b)
+check("断开的那一端只松开它自己的键，另一端还按着",
+      released == 1 and multi.midi.notes == [(39, 15, 0)] and list(multi._pad_held) == [2],
+      f"松开 {released} 个，发出 {multi.midi.notes}，仍按着 {sorted(multi._pad_held)}")
+multi.release_triggers_of(client_a)
+check("剩下那一端断开时才松开它自己那条",
+      multi.midi.notes[-1] == (38, 15, 0) and not multi._pad_held,
+      f"{multi.midi.notes[-1]}，仍按着 {len(multi._pad_held)} 个")
+
+# ── 3g. 看门狗必须挂在"真正在跑的那个循环"上（CLI 路径曾经完全没兜底） ─────────
+# 原来 `_cli_mode` 里直接 `asyncio.ensure_future(handler.pad_watchdog())`：那一刻没有运行中的
+# 循环，任务被挂到 `get_event_loop()` 顺手建出来的那个循环上，而 `web.run_app()` 会自己
+# `new_event_loop()` → 兜底永远不 tick（真机日志里 51 条 `Task was destroyed but it is pending!
+# … pad_watchdog` 全在 CLI 启动后）。现在两个都挂 `app.on_startup`，这里真的驱动一次启动信号。
+async def watchdog_wiring(pb_idle_sec):
+    h, _ = handler_with_midi()
+    h.pb_idle_sec = pb_idle_sec
+    app2 = web.Application()
+    server.register_watchdogs(app2, h)
+    app2.freeze()                              # 冻结信号（AppRunner.setup() 平时会做这件事）
+    await app2.startup()                       # 真的触发 on_startup
+    await asyncio.sleep(0.25)                  # 让两个任务各跑几轮
+    running = [t.get_coro().__qualname__ for t in asyncio.all_tasks()
+               if t is not asyncio.current_task()]
+    for t in asyncio.all_tasks():
+        if t is not asyncio.current_task():
+            t.cancel()
+    await asyncio.sleep(0)
+    return running
+
+with_pb = asyncio.run(watchdog_wiring(0.5))
+check("启动了循环之后：pad 兜底与 PB 兜底都在跑（挂在 on_startup 上）",
+      any("pad_watchdog" in n for n in with_pb) and any("pb_watchdog" in n for n in with_pb),
+      f"运行中的任务：{sorted(n.split('.')[-1] for n in with_pb)}")
+without_pb = asyncio.run(watchdog_wiring(0))
+check("--pb-idle-ms 0（pb_idle_sec=0）只关掉 PB 那条，**pad 兜底照旧在跑**",
+      any("pad_watchdog" in n for n in without_pb)
+      and not any("pb_watchdog" in n for n in without_pb),
+      f"运行中的任务：{sorted(n.split('.')[-1] for n in without_pb)}")
+
 # ── 3b. 面板专用端口：音符绝不能走推子那个端口 ────────────────────────────────
 # 真机上暴露的问题：推子的 CC1 靠 All MIDI Inputs 进 DAW，所以那个端口不能从该名单摘掉，
 # 而名单里的端口同时喂音源轨（OMNI）——面板的音符会让音源跟着弹音。分开两个端口才两全。
