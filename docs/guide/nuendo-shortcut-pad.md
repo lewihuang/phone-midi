@@ -607,3 +607,4 @@ Nuendo 把 MIDI Remote 设备与分配存在文本 JSON 里，直接看比在界
 | 按一下执行了两次 | 宏里是否含"切换"类命令；一次按下只发一条 Note On（松开发 Note Off），映射助手只应绑 Note On |
 | 松开后 DAW 里 Note 一直亮（宏/按钮停不下来） | 先点 PC 窗口的 **「全部停」**（对通道 16 发全部 Note Off + CC123），或重启 Bridge（启动时也会清一次）。**2026-09-28 之前这是能永久卡住的状态**：同一格被按下两次会让 2 条 Note On 只配 1 条 Note Off，剩下那条手机端无法关掉、只能 DAW 侧 panic。现在同一格重复按下只发一条 Note On，且没有记录的松开也会补 Note Off；若仍复现，请把 Bridge 日志里那几行（`重复按下` / `超过 … 没收到松开`）发来 |
 | 换了台手机连不上新页面 | 手机缓存的是旧版前端：`web/*` 改动后要把 `?v=` 升版并重打包 exe，然后关掉旧 exe 重新启动 |
+| 想确认"手机到底发了几条 Note"（不接 DAW 也能看） | `python tools\pad_monitor.py`（默认听 `PhonePad`，`--port` 换端口、`--seconds 120` 自动结束）：每条 Note On 都应该有配对的 Note Off；出现 `HANGING` = Bridge 侧那一类（看 bridge.log 的"重复按下 / 超过 1000 ms 没收到松开"），出现 `clear sweep` = 启动/停止/「全部停」的清场 |

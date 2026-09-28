@@ -50,6 +50,9 @@
 - `docs/spec/shortcut-pad.md`：补 **D44（所有权与断开回收）、D45（看门狗注册与清场范围）、
   D46（手机端：一格一条 down / 断线只清本地痕迹 / 先发 up 再关 socket）**，§10.3 补验收 26–28。
 - `docs/changelog/2026-09-28_pad-stuck-note.md`：在第一轮那份的遗留清单后面加一行指向本篇。
+- `tools/pad_monitor.py`（**新增**）：听面板端口、把 Note On/Off 配对情况打出来（`HANGING` = 悬挂、
+  `clear sweep` = 清场/自愈），本轮查这个 bug 时就靠它取证；`docs/guide/nuendo-shortcut-pad.md`
+  的"没反应怎么查"里加了入口。不接 DAW 也能判断问题出在哪一段。
 - **手机端缓存击穿升版**（`web/*` 改了就必须做，否则手机还在跑旧 JS，真机测试等于白测）：
   `padgrid.js?v=1→2`、`pad.js?v=30→31`、`app.js?v=26→27`（`pad.html` 与 `fader.html` 两处引用）。
 - `bridge/dist/MIDI Deck.exe` 重打包（`server.py` 与 `web/` 都改了；已用 `--no-gui` 起过一次，
