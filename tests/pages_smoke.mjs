@@ -790,6 +790,45 @@ function check(name, ok, detail) {
     xys().at(-1).cc_x === 30 && xys().at(-1).cc_y === 31,
     `${JSON.stringify(xys().at(-1))}`);
 
+  // 快速预设（弦乐表情 = CC1+CC11 / X/Y Pad = CC20+CC21）：**只填两个 CC 号，不锁定**。
+  // 高亮如实反映当前那两个号 —— 手改成 30/31 之后两个都不该亮（上一步刚改过）。
+  const presetExpr = win.document.getElementById('presetExpr');
+  const presetXy = win.document.getElementById('presetXy');
+  check('xy: 有"弦乐表情 / X/Y Pad"两个快速预设按钮（标签在页面标记里）',
+    !!presetExpr && !!presetXy
+    && /id="presetExpr"[\s\S]{0,240}?弦乐表情/.test(htmlOf('xy'))
+    && /id="presetXy"[\s\S]{0,240}?X\/Y Pad/.test(htmlOf('xy')),
+    '两个按钮都在（桩不解析静态文字，所以标签按标记断言）');
+  check('xy: 当前 CC 号不是任何一套预设时，两个按钮都不高亮（不假装）',
+    !presetExpr.classList.contains('sel') && !presetXy.classList.contains('sel'),
+    'CC30/31 → 都不亮');
+
+  presetExpr.dispatch('click', {});
+  check('xy: 点「弦乐表情」→ 两个 CC 号变成 1/11，并立刻用新号发一次当前位置',
+    win.document.getElementById('ccX').value === '1'
+    && win.document.getElementById('ccY').value === '11'
+    && xys().at(-1).cc_x === 1 && xys().at(-1).cc_y === 11,
+    `ccX=${win.document.getElementById('ccX').value} ccY=${win.document.getElementById('ccY').value}，`
+    + `发出 ${JSON.stringify(xys().at(-1))}`);
+  check('xy: 预设**不锁定** CC 号（输入框仍可编辑，通道选择也不动）',
+    !win.document.getElementById('ccX').disabled && !win.document.getElementById('ccY').disabled
+    && presetExpr.classList.contains('sel') && !presetXy.classList.contains('sel'),
+    `ccX.disabled=${win.document.getElementById('ccX').disabled}，高亮=弦乐表情`);
+
+  win.document.getElementById('ccY').value = '11';      // 手改成 1/12（只改 Y）
+  win.document.getElementById('ccY').value = '12';
+  win.document.getElementById('ccY').dispatch('change', {});
+  check('xy: 手改一个号之后高亮立刻灭掉（高亮 = 值真的对得上）',
+    !presetExpr.classList.contains('sel') && !presetXy.classList.contains('sel')
+    && xys().at(-1).cc_x === 1 && xys().at(-1).cc_y === 12,
+    `发出 ${JSON.stringify(xys().at(-1))}`);
+
+  presetXy.dispatch('click', {});
+  check('xy: 点「X/Y Pad」→ 回到 CC20/21，该按钮亮起',
+    xys().at(-1).cc_x === 20 && xys().at(-1).cc_y === 21
+    && presetXy.classList.contains('sel') && !presetExpr.classList.contains('sel'),
+    `发出 ${JSON.stringify(xys().at(-1))}`);
+
   // 断连
   ws.onclose();
   check('xy: 断连后面变灰、读数显示未连接', plane.classList.contains('offline')

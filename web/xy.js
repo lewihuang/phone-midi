@@ -5,6 +5,8 @@
 // 滤波的教训（Mode B 那条被删掉的滤波链）不在这里重犯：跟手优先。
 //
 // 一条手指动作 → 两条 7-bit CC（两个可配的 CC 号，同通道），不走映射引擎。
+// 页面上还有两个"快速预设"（弦乐表情 = CC1+CC11 / X/Y Pad = CC20+CC21）：**只填两个 CC 号、
+// 不锁定**，输入框始终可手改。
 // 设计：docs/spec/xy-pad.md；术语：CONTEXT.md（Position / Marker / Landing / Drag / Recentre）。
 (() => {
   'use strict';
@@ -212,11 +214,38 @@
     elCcX.value = String(cfg.ccX);
     elCcY.value = String(cfg.ccY);
     elSelCh.value = String(cfg.channel + 1);
+    paintPresets();                               // 高亮跟着实际的两个号走（手改也算数）
     sendNow(true);                                // 立刻用新号发一次当前位置
   }
   elCcX.addEventListener('change', readConfig);
   elCcY.addEventListener('change', readConfig);
   elSelCh.addEventListener('change', readConfig);
+
+  // ── 快速预设（弦乐表情 / X/Y Pad） ──────────────────────────────────────────
+  //
+  // 只是"一键把两个 CC 号填好"，**不是锁定**：填完输入框照样能手改；高亮如实反映当前那两个号
+  // （手改成别的值 → 两个都不亮）。所以预设不进协议、Bridge 侧一个字都不用改 —— 两个号本来就
+  // 是随每条消息带的、Bridge 会落盘（spec 决策 6）。
+  //
+  // 弦乐表情用 CC1 + CC11（调制/颤音 + 表情），这是画弦乐表情最顺的一对；代价是 CC1 与推子
+  // （Mode A/B）同号同通道，**别和推子同时跑**（同一根线会混）。
+  const PRESETS = [
+    { el: document.getElementById('presetExpr'), ccX: 1,  ccY: 11 },   // 弦乐表情
+    { el: document.getElementById('presetXy'),   ccX: 20, ccY: 21 },   // X/Y Pad（默认）
+  ];
+
+  /** 高亮 = "当前这两个号正好是这套预设"；一个手改过的值就能让它灭掉（不假装）。 */
+  function paintPresets() {
+    for (const p of PRESETS) p.el.classList.toggle('sel', cfg.ccX === p.ccX && cfg.ccY === p.ccY);
+  }
+
+  function applyPreset(p) {
+    elCcX.value = String(p.ccX);
+    elCcY.value = String(p.ccY);
+    readConfig();          // 复用既有那条路：校验 + 立刻用新号发一次当前位置 + Bridge 落盘
+  }
+
+  for (const p of PRESETS) p.el.addEventListener('click', () => applyPreset(p));
 
   // ── WebSocket ───────────────────────────────────────────────────────────────
 
@@ -271,6 +300,7 @@
 
   fillChannels();
   paint();
+  paintPresets();          // 打开页面时按默认 CC20/21 点亮「X/Y Pad」（值对不上就两个都不亮）
   setConn(false);
   keepAwake();
   connect();

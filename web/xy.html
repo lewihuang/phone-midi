@@ -10,6 +10,11 @@
   /* 页面专属：顶栏 / 正方形控制面 / 一行读数+动作 / 一行 CC 配置。整屏不滚动。 */
   body { display: flex; flex-direction: column; align-items: center; }
   .topbar { max-width: 420px; }
+  /* 快速预设：只是"一键把两个 CC 号填好"，**不锁定** —— 输入框照样能手改，
+     高亮如实反映当前那两个号（手改成别的值就两个都不亮）。 */
+  .xy-presets { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
+  .xy-presets .btn { min-height: 34px; padding: 0 14px; font-size: 15px; border-radius: 9px; }
+  .xy-presets .btn.sel { background: var(--blue); color: #fff; }
 </style>
 </head>
 <body>
@@ -32,6 +37,14 @@
   <p class="xy-readout dim" id="readout">未连接</p>
   <p class="xy-readout dim" id="hint"></p>
 
+  <div class="xy-presets" id="presets">
+    <span class="range-label">快速预设</span>
+    <button class="btn btn-ghost" id="presetExpr" type="button"
+            title="X = CC1（调制/颤音）、Y = CC11（表情）；只填这两个号，仍可手改。注意与推子同用 CC1，别和推子同时跑">弦乐表情</button>
+    <button class="btn btn-ghost" id="presetXy" type="button"
+            title="X = CC20、Y = CC21（默认）；只填这两个号，仍可手改">X/Y Pad</button>
+  </div>
+
   <div class="xy-cfg">
     <span class="range-label">X CC</span>
     <input class="range-input" id="ccX" type="number" min="0" max="127" step="1" value="20">
@@ -45,6 +58,6 @@
 
 <p class="foot-brand">Powered by Levi黄</p>
 
-<script src="xy.js?v=1"></script>
+<script src="xy.js?v=2"></script>
 </body>
 </html>
