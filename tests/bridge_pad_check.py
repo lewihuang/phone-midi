@@ -293,6 +293,44 @@ try:
 finally:
     server.PAD_HOLD_GUARD_SEC = real_guard
 
+# ── 3d. 同一格被按下两次：真机"宏停不下来"的根因 ─────────────────────────────
+# 用户报的现象：偶尔 DAW 里那条 Note 一直亮着、宏/按钮停不下来，手机怎么按都修不掉。
+# 链路：手机可能对同一格发两次 down（两根手指压同一格 / 面板页与推子页第 4 页条同时按同一
+# 编号 / 丢了"松开"之后 1 秒内重按），而 Bridge 按**触发编号**只记一条 → 2 条 Note On 只配
+# 1 条 Note Off，剩下那条再也没人能关（手机端没有"单独发 Off"的路子）。
+twice, _ = handler_with_midi()
+asyncio.run(twice._on_trigger({"kind": "trigger", "id": 6, "phase": "down"}))
+asyncio.run(twice._on_trigger({"kind": "trigger", "id": 6, "phase": "down"}))
+check("同一格第二次按下不再发第二条 Note On（一格 = 一个音符）",
+      twice.midi.notes == [(42, 15, 127)], f"{twice.midi.notes}")
+asyncio.run(twice._on_trigger({"kind": "trigger", "id": 6, "phase": "up"}))
+check("第二次按下之后松开：Note On/Off 仍然一对一，没有悬挂",
+      twice.midi.notes == [(42, 15, 127), (42, 15, 0)] and not twice._pad_held,
+      f"{twice.midi.notes}，仍按着 {len(twice._pad_held)} 个")
+asyncio.run(twice._on_trigger({"kind": "trigger", "id": 6, "phase": "up"}))
+check("再补一次松开：没有记录的 up 也补一条 Note Off（幂等自愈）",
+      twice.midi.notes[-1] == (42, 15, 0), f"{twice.midi.notes[-1]}")
+
+# 旧版本（或上一次运行）留下的悬挂：`_pad_held` 里已经没有它了，兜底遍历不到它。
+# 能关掉它的只有两条路——松开时补 Off、以及启动/停止/手动的清场，这条守住前者。
+stale, _ = handler_with_midi()
+asyncio.run(stale._on_trigger({"kind": "trigger", "id": 7, "phase": "up"}))
+check("Bridge 不认识的编号：松开也发一条 Note Off（悬挂的自愈通道）",
+      stale.midi.notes == [(43, 15, 0)] and not stale._pad_held, f"{stale.midi.notes}")
+
+# ── 3e. 清场：启动 / 停止 / 手动「全部停」共用这一条路 ────────────────────────
+panic, _ = handler_with_midi()
+asyncio.run(panic._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
+asyncio.run(panic._on_trigger({"kind": "trigger", "id": 31, "phase": "down"}))
+panic.midi.notes.clear()
+cleared = panic.pad_all_off("测试")
+check("清场：48 个触发编号全部补 Note Off，按住的记录一并清掉",
+      panic.midi.notes == [(36 + i, 15, 0) for i in range(server.pad_trigger_count())]
+      and not panic._pad_held and cleared == server.pad_trigger_count(),
+      f"{len(panic.midi.notes)} 条 Note Off，仍按着 {len(panic._pad_held)} 个")
+check("清场：再补一条 CC123 All Notes Off（只作用在通道 16）",
+      panic.midi.cc[-1] == (123, 15, 0), f"最后一条 {panic.midi.cc[-1]}")
+
 # ── 3b. 面板专用端口：音符绝不能走推子那个端口 ────────────────────────────────
 # 真机上暴露的问题：推子的 CC1 靠 All MIDI Inputs 进 DAW，所以那个端口不能从该名单摘掉，
 # 而名单里的端口同时喂音源轨（OMNI）——面板的音符会让音源跟着弹音。分开两个端口才两全。
@@ -519,6 +557,31 @@ try:
           and app._pad_cells[0]["note"].cget("text") == "N76",
           f"第 6 页首格 {app._pad_cells[0]['note'].cget('text')}")
     app._pad_goto(0)
+
+    # ── 「全部停」按钮：面板 Note 悬挂的手动出口（2026-09-28） ──────────────────
+    # 放在最后做：`_build_running()` 会把设置界面的控件全部清掉，前面那些断言用的是它们。
+    app._handler = None
+    app._build_running("Fake MIDI", 8765, "https")
+    app.root.update_idletasks()
+    check("运行界面里有「全部停」，与「快捷键面板…」并排（不占额外高度）",
+          app._panic_btn.cget("text") == "全部停" and app._panic_btn.master is app._pad_btn.master,
+          f"{app._pad_btn.cget('text')} / {app._panic_btn.cget('text')}")
+
+    class _FakePanic:
+        def __init__(self): self.reasons = []
+
+        def pad_all_off(self, reason=""):
+            self.reasons.append(reason); return server.pad_trigger_count()
+
+    app._handler = _FakePanic()
+    app._panic_btn.invoke()                      # 真的点一下，不是直接调方法
+    check('点「全部停」= 调 handler.pad_all_off("手动") 并回显条数',
+          app._handler.reasons == ["手动"] and "48" in app._panic_btn.cget("text"),
+          f"reason={app._handler.reasons}，按钮文字「{app._panic_btn.cget('text')}」")
+    app._handler = None
+    app._on_panic()                              # 没启动：不能让窗口抛错
+    check("未启动时点「全部停」：只提示「未启动」",
+          app._panic_btn.cget("text") == "未启动", f"按钮文字「{app._panic_btn.cget('text')}」")
 
     app._close_pad_editor()
     check("关闭编辑器后不留窗口引用", app._pad_win is None and app._pad_cells == [], "已清理")

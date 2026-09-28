@@ -361,6 +361,19 @@ class SensorHandler:
     def pad_note_on(self, trigger_id: int):
         tid = int(trigger_id)
         note = self.pad_note(tid)
+        # 同一格被第二次按下：**只刷新兜底计时，不再发第二条 Note On**。
+        # 一格 = 一个音符，与"有几根手指按着 / 有几个客户端按了"无关。发了第二条就只剩一条
+        # Note Off 能配它：第一根手指松开时把记录 pop 掉，第二根松开时 `pad_note_off` 已无
+        # 记录也不再发——DAW 里于是永久留一条关不掉的 Note，而手机端**没有任何路子**能单独
+        # 补一条 Note Off（用户只能去 DAW 侧 panic，症状就是"按了也停不下来"）。
+        # 真机上的三种来法：两根手指压同一格、面板页与推子页第 4 页条同时按同一编号、
+        # 丢了"松开"之后 1 秒内重按。见 docs/changelog/2026-09-28_pad-stuck-note.md。
+        if tid in self._pad_held:
+            _at, held_note = self._pad_held[tid]
+            self._pad_held[tid] = (time.monotonic(), held_note)
+            log.info("快捷键触发 %d 重复按下（Note %d 已发过）：只刷新兜底计时，不再发 Note On",
+                     tid, held_note)
+            return
         try:
             self.pad_midi.send_note(note, PAD_CHANNEL, 127)
         except Exception as e:
@@ -372,13 +385,49 @@ class SensorHandler:
         self.last_cc_output = [{"cc": "N%d" % note, "channel": PAD_CHANNEL, "value": 127}]
 
     def pad_note_off(self, trigger_id: int) -> bool:
-        """Send the matching Note Off. Returns whether a Note On was actually open."""
+        """Send the matching Note Off. Returns whether a Note On was actually open.
+
+        没有记录时**也**补一条 Note Off（返回 False，好让兜底的日志说的是实话）：Note Off
+        是幂等的，而这是"已经悬挂的 Note"唯一的自愈通道——上一次运行留下的、或者旧版本
+        "重复按下"留下的那条，正是靠它在下一次松开时被关掉。代价是别的客户端的误发松开
+        （例如重连后残留的 `held`）会提前关掉这一格；比起 DAW 里留一条永远关不掉的 Note，
+        这个代价是划算的。
+        """
         tid = int(trigger_id)
-        if tid not in self._pad_held: return False
-        _at, note = self._pad_held.pop(tid)
-        try: self.pad_midi.send_note(note, PAD_CHANNEL, 0)
-        except Exception as e: log.warning("快捷键松开失败（note %d）：%s", note, e)
-        return True
+        tracked = tid in self._pad_held
+        note = self._pad_held.pop(tid)[1] if tracked else self.pad_note(tid)
+        try:
+            self.pad_midi.send_note(note, PAD_CHANNEL, 0)
+        except Exception as e:
+            log.warning("快捷键松开失败（note %d）：%s", note, e)
+        return tracked
+
+    def pad_all_off(self, reason: str = "") -> int:
+        """Close every Note the pad could possibly have left open on its channel.
+
+        启动与停止都要做一次，因为这时 Bridge **自己也不知道**哪一条还挂着（上一进程崩了、
+        被强杀、或者旧版本留下了悬挂）。逐格数 Note Off 没用，所以整条通道扫一遍：48 个
+        触发编号覆盖全部可能发过的音符，再补一条 CC123（All Notes Off）。
+        CC 与音符都在**通道 16**（PAD_CHANNEL），面板与推子共用端口时也不会动到推子的通道。
+        """
+        self._pad_held.clear()
+        sent = 0
+        for tid in range(pad_trigger_count()):
+            note = self.pad_note(tid)
+            try:
+                self.pad_midi.send_note(note, PAD_CHANNEL, 0)
+                sent += 1
+            except Exception as e:
+                log.warning("清场时 Note Off 失败（note %d）：%s", note, e)
+                break
+        try:
+            self.pad_midi.send_cc(123, PAD_CHANNEL, 0)
+        except Exception as e:
+            log.warning("清场时 All Notes Off(CC123) 失败：%s", e)
+        if sent:
+            log.info("面板清场%s：通道 %d 发 %d 个 Note Off + CC123",
+                     ("（%s）" % reason) if reason else "", PAD_CHANNEL + 1, sent)
+        return sent
 
     def pad_held_expired(self, now: float | None = None) -> list[int]:
         t = time.monotonic() if now is None else now
@@ -1365,10 +1414,18 @@ class BridgeApp:
                   relief=tk.FLAT, padx=14, pady=4, cursor="hand2").pack(pady=(4, 0))
 
         # 快捷键面板：PC 端镜像手机上的按钮阵列并可编辑
-        self._pad_btn = tk.Button(self.root, text="快捷键面板…", command=self._open_pad_editor,
+        pad_row = tk.Frame(self.root, bg=BG)
+        pad_row.pack(pady=(6, 0))
+        self._pad_btn = tk.Button(pad_row, text="快捷键面板…", command=self._open_pad_editor,
                                   font=FONT_CN, bg=SURFACE, fg=FG, activebackground=BORDER,
                                   relief=tk.FLAT, padx=14, pady=4, cursor="hand2")
-        self._pad_btn.pack(pady=(6, 0))
+        self._pad_btn.pack(side=tk.LEFT)
+        # 全部停：面板触发的是 Note，手机丢了"松开"时 DAW 里会留一条关不掉的 Note（宏/按钮
+        # 停不下来）。启动与停止都会自动清一次，这颗按钮是"不想重启 Bridge 时"的手动出口。
+        self._panic_btn = tk.Button(pad_row, text="全部停", command=self._on_panic,
+                                    font=FONT_CN, bg=SURFACE, fg=AMBER, activebackground=BORDER,
+                                    relief=tk.FLAT, padx=14, pady=4, cursor="hand2")
+        self._panic_btn.pack(side=tk.LEFT, padx=(8, 0))
 
         # Stop button
         self._stop_btn = tk.Button(self.root, text="STOP", command=self._on_stop,
@@ -1946,12 +2003,43 @@ class BridgeApp:
                   fg=FG, relief=tk.FLAT, padx=24, pady=6, cursor="hand2").pack(pady=20)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
+    def _on_panic(self):
+        """「全部停」：把通道 16 上可能还挂着的 Note 全部关掉。
+
+        面板发的是 Note：手机一旦丢了"松开"（页面被杀、WiFi 断、手指滑出格子），或者同一格
+        被按下两次（两根手指 / 面板页与推子页第 4 页条同时按），DAW 里就可能留下一条**关不掉**
+        的 Note——宏或按钮停不下来，而手机端没有任何办法单独补一条 Note Off。
+        Bridge 启动与停止都会自动清一次，这颗按钮让用户不必为此重启 Bridge。
+        """
+        handler = self._handler
+        if not handler:
+            self._flash_btn("未启动")
+            return
+        try:
+            sent = handler.pad_all_off("手动")
+        except Exception as e:
+            log.warning("手动清场失败：%s", e)
+            self._flash_btn("失败（见日志）")
+            return
+        self._flash_btn("已清 %d 个音" % sent)
+
+    def _flash_btn(self, text, ms: int = 1600):
+        """临时改按钮文字当反馈：状态行每 50 ms 被 `_poll_status` 重写，借它显示会打架。"""
+        btn = getattr(self, "_panic_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.configure(text=text)
+            self.root.after(ms, lambda: btn.winfo_exists() and btn.configure(text="全部停"))
+        except Exception:
+            pass
+
     def _clear(self):
         for w in self.root.winfo_children(): w.destroy()
         for name in ("_status_midi", "_status_clients", "_status_cc", "_indicator", "_dot",
                      "_mon_value", "_mon_back", "_bar", "_bar_bg", "_bar_fill", "_bar_mid",
                      "_busy_lbl", "_start_btn", "_stop_btn", "_tree", "_port_var", "_pad_btn",
-                     "_status_pad", "_pad_port_var", "_pad_port_box"):
+                     "_panic_btn", "_status_pad", "_pad_port_var", "_pad_port_box"):
             if hasattr(self, name): delattr(self, name)
         if self._status_timer: self.root.after_cancel(self._status_timer); self._status_timer = None
 
@@ -2031,6 +2119,9 @@ class BridgeApp:
                 apply_remembered_fader_target(engine)     # 沿用上次用过的 CC / 通道
                 handler = SensorHandler(engine, midi, pb_idle_sec=self._pb_idle_sec,
                                         pad_midi=pad_midi)
+                # 上一次运行可能留下悬挂的 Note（被强杀、崩了、或旧版本的重复按下）：端口刚打开、
+                # 一个客户端都还没有，是清场最安全的时刻（见 pad_all_off）。
+                handler.pad_all_off("启动")
                 ssl_context, protocol = self._ssl_for(base_dir)
                 app = web.Application()
                 app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
@@ -2146,6 +2237,11 @@ class BridgeApp:
                     log.warning("等待服务器停止：%s", e)
             if thread and thread.is_alive():
                 thread.join(timeout=3)
+            # 停止前清场：手机可能还按着键（或者还有一条悬挂的 Note），而 MIDI 端口马上就要
+            # 关掉——关掉之后谁都发不出 Note Off 了。所以必须在 close() 之前做。
+            if handler:
+                try: handler.pad_all_off("停止")
+                except Exception as e: log.warning("停止清场失败：%s", e)
             for m in (midi, pad_midi):
                 if m:
                     try: m.close()
@@ -2229,6 +2325,8 @@ def _cli_mode(args):
     engine = MappingEngine(str(config_path))
     apply_remembered_fader_target(engine)             # 沿用上次用过的 CC / 通道
     handler = SensorHandler(engine, midi, pb_idle_sec=args.pb_idle_ms / 1000.0, pad_midi=pad_midi)
+    # 上一次运行可能留下悬挂的 Note（被强杀、崩了、或旧版本的重复按下）：先清场再开门。
+    handler.pad_all_off("启动")
     app = web.Application()
     app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
     app.router.add_get("/ws", handler.handle); app.router.add_get("/status", handle_status)
