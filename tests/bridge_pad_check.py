@@ -247,6 +247,11 @@ asyncio.run(h._on_trigger({"kind": "trigger", "id": 3, "phase": "up"}))
 check("松开发配对的 Note Off（力度 0）",
       h.midi.notes[-1] == (39, 15, 0) and len(h.midi.notes) == 2,
       f"{h.midi.notes}")
+# 松开之后 PC 窗口的"当前值"必须清空：以前它一直挂着最后一次按下的 `Note N39`，
+# 真机上看起来就是"这条 Note 卡住了、点『全部停』也没用"（2026-09-28 用户就是这么被误导的）。
+check("松开后窗口的当前值清空（不再挂着那条 Note）",
+      h.last_cc_output == [] and server.BridgeApp._value_text([], True) == "—",
+      f"last_cc_output={h.last_cc_output}，窗口显示「{server.BridgeApp._value_text([], True)}」")
 asyncio.run(h._on_trigger({"kind": "trigger", "id": 3}))          # 没有 phase
 check("没有 phase 时按「按下」处理（宽容旧客户端）",
       h.midi.notes[-1] == (39, 15, 127), f"{h.midi.notes[-1]}")
@@ -323,11 +328,14 @@ panic, _ = handler_with_midi()
 asyncio.run(panic._on_trigger({"kind": "trigger", "id": 0, "phase": "down"}))
 asyncio.run(panic._on_trigger({"kind": "trigger", "id": 31, "phase": "down"}))
 panic.midi.notes.clear()
+panic.last_cc_output = [{"cc": "N40", "channel": 15, "value": 127}]   # 窗口上还挂着一条
 cleared = panic.pad_all_off("测试")
 check("清场：48 个触发编号全部补 Note Off，按住的记录一并清掉",
       panic.midi.notes == [(36 + i, 15, 0) for i in range(server.pad_trigger_count())]
       and not panic._pad_held and cleared == server.pad_trigger_count(),
       f"{len(panic.midi.notes)} 条 Note Off，仍按着 {len(panic._pad_held)} 个")
+check("清场：窗口的当前值也清空（不留着上一条 Note）",
+      panic.last_cc_output == [], f"{panic.last_cc_output}")
 check("清场：再补一条 CC123 All Notes Off（只作用在通道 16）",
       panic.midi.cc[-1] == (123, 15, 0), f"最后一条 {panic.midi.cc[-1]}")
 

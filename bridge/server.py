@@ -415,6 +415,10 @@ class SensorHandler:
             self.pad_midi.send_note(note, PAD_CHANNEL, 0)
         except Exception as e:
             log.warning("快捷键松开失败（note %d）：%s", note, e)
+        # 松开之后"当前值"就该是空的。以前这里不碰 `last_cc_output`，于是 PC 窗口一直挂着最后一次
+        # 按下时的 `Note N67`——用户看到的就是"这条 Note 卡住了、点『全部停』也没用"，而 MIDI 侧
+        # 其实早就干净了（2026-09-28 真机上就是这么被误导的，见 changelog）。
+        self.last_cc_output = []
         return tracked
 
     def pad_all_off(self, reason: str = "") -> int:
@@ -426,6 +430,7 @@ class SensorHandler:
         CC 与音符都在**通道 16**（PAD_CHANNEL），面板与推子共用端口时也不会动到推子的通道。
         """
         self._pad_held.clear()
+        self.last_cc_output = []          # 窗口的"当前值"也跟着清（不然会挂着上一条 Note）
         sent = 0
         for tid in range(pad_trigger_count()):
             note = self.pad_note(tid)
