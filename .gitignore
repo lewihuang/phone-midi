@@ -1,4 +1,4 @@
-﻿# Build
+# Build
 bridge/build/
 bridge/dist/
 bridge/*.spec
@@ -26,3 +26,4 @@ Thumbs.db
 
 # 打包产物（迁移包）
 release/
+nul

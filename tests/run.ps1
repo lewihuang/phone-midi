@@ -26,6 +26,10 @@ Write-Host "`n=== bridge_pad_check.py (shortcut pad) ===" -ForegroundColor Cyan
 python "$here/bridge_pad_check.py"
 if ($LASTEXITCODE -ne 0) { $fail++ }
 
+Write-Host "`n=== bridge_port_check.py (MIDI port watchdog) ===" -ForegroundColor Cyan
+python "$here/bridge_port_check.py"
+if ($LASTEXITCODE -ne 0) { $fail++ }
+
 Write-Host "`n=== bridge_xy_check.py (X/Y pad) ===" -ForegroundColor Cyan
 python "$here/bridge_xy_check.py"
 if ($LASTEXITCODE -ne 0) { $fail++ }

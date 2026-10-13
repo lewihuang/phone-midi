@@ -329,6 +329,7 @@ Get-ChildItem "$env:APPDATA\Steinberg" -Directory | Where-Object { Test-Path (Jo
 | 改了配置/宏，重启后没了 | 改的时候 DAW 开着吗 | 见 §0.2；写完再回读一次文件确认（附录 C） |
 | 宏在列表里看不到 | 名字 / 加载时机 | 中文名会被丢（§0.3）；预制要先拷再开关 DAW 一次（§0.5） |
 | 手机页面是旧的 | 手机缓存 / exe 快照 | 改过前端要 `?v=` 升版并**重打包 exe**；手机强刷一次 |
+| MIDI Remote 设备 `PhoneMIDI` **用着用着显示"断开连接"**（手机显示已连接、Bridge 也有输出；推子那个端口不受影响；**只有重启 DAW 才恢复**） | 先分清"端口变了"还是"DAW 没重新认" | ① `python tools\midi_endpoint_identity.py` 对比断开前后的 InstanceId 与下标 ② 看 `%APPDATA%\phone-midi-bridge\bridge.log` 有没有 `MIDI 端口列表变了`（Bridge ≥ 2026-09-30 会自己体检）③ 管理员 `Restart-Service midisrv`（**不用重启 DAW**）：设备回来了 → 责任在 Windows MIDI 服务 + 动态端口；没回来 → 在 DAW 侧的重新绑定 ④ 在 MIDI Remote 管理器里把该设备移除再添加，能恢复就说明只是 DAW 没重新认 |
 
 > **关于 `tools\send_note.py`（分层排查里最好用的那一支）**：它需要目标机装了 **Python + mido**。
 > 没有的话，替代判据：① 在 DAW 的 MIDI Remote 管理器里看该设备的输入活动指示；

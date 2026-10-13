@@ -84,10 +84,16 @@ class WinMidiError(Exception): pass
 class WinMidi:
     MAXPNAMELEN = 32
 
+    # 上一次体检看到的端口名（None = 还没量过）。MIDI 端口**在 DAW 跑着的过程中**消失/重排，
+    # DAW 侧看到的是"设备断开连接"，而 Bridge 这边什么都没有发生过——除非它自己会看。见
+    # `SensorHandler.port_watchdog`。
+    _prev_ports: list[str] | None = None
+
     def __init__(self):
         self._winmm = ctypes.windll.winmm
         self._hmo = None
         self._device_id = 0
+        self._opened_name: str | None = None   # 打开的那个端口叫什么（重新扫描时要按名字找回）
 
     @staticmethod
     def count_devices() -> int:
@@ -117,6 +123,19 @@ class WinMidi:
             except WinMidiError: pass
         return ports
 
+    @staticmethod
+    def port_names() -> list[str]:
+        """按**顺序**取名字（下标就是 WinMM 的设备号）。
+
+        `list_ports()` 每个设备都要一次 `midiOutGetDevCapsW`，用来做"每 3 秒体检一次"太重；
+        这里只取名字，够回答"端口还在不在 / 顺序变没变"。
+        """
+        names = []
+        for i in range(WinMidi.count_devices()):
+            try: names.append(WinMidi.device_name(i))
+            except WinMidiError: names.append("(打不开)")
+        return names
+
     def open(self, device_id: int | None = None, name: str | None = None):
         ports = self.list_ports()
         if not ports: raise WinMidiError("No MIDI output devices")
@@ -136,6 +155,50 @@ class WinMidi:
                                      wintypes.DWORD(0), wintypes.DWORD(0), wintypes.DWORD(0))
         if r != 0: raise WinMidiError(f"midiOutOpen(device={self._device_id}) failed: {r}")
         self._hmo = hmo
+        self._opened_name = ports[self._device_id][1]
+
+    def reopen_if_gone(self) -> str | None:
+        """端口不见了就按**名字**重新打开它，返回"刚才发生了什么事"（没变则 None）。
+
+        为什么 Bridge 需要这个：它原来只会在 START 时打开一次端口，之后**假设句柄永远有效**。
+        端口一旦消失，`midiOutShortMsg` 是静默失败的——Bridge 界面上照样"有信号"，而 DAW
+        什么也收不到（真机上用户看到的就是"手机显示已连接、Bridge 有输出、Nuendo 说断开"）。
+        这里做的只是"把 Bridge 自己这一头接回去"；DAW 那一头要不要重新认，是 DAW 的事。
+        """
+        try:
+            now = self.port_names()
+        except Exception as e:
+            return f"量端口列表失败：{e}"      # 体检本身出错绝不能把看门狗打死
+        prev, WinMidi._prev_ports = WinMidi._prev_ports, now
+        if prev is None:
+            log.info("MIDI 端口列表（体检起点）：%s", " | ".join(now) or "（空）")
+            return None
+        if now == prev:
+            return None
+        gone = [n for n in prev if n not in now]
+        fresh = [n for n in now if n not in prev]
+        note = ("MIDI 端口列表变了：%s%s%s（现在共 %d 个：%s）"
+                % ("少了 " + ", ".join(gone) if gone else "",
+                   "；" if gone and fresh else "",
+                   "多了 " + ", ".join(fresh) if fresh else "",
+                   len(now), " | ".join(now)))
+        log.warning("%s", note)
+        if self._hmo is not None and self._opened_name and self._opened_name not in now:
+            # 我们正拿着的那个端口没了（或者被换了身份）。句柄还"在"，但发出去的东西去不了任何
+            # 地方——静静重开一次，下次按下还能到。重开失败也不抛：下一轮体检会再试。
+            log.warning("正在用的端口「%s」已不在列表里，按名字重新打开", self._opened_name)
+            self._hmo = None
+            try:
+                self.open(name=self._opened_name)
+                log.info("端口「%s」已重新打开（device=%d）", self._opened_name, self._device_id)
+            except Exception as e:
+                log.warning("重新打开「%s」失败：%s", self._opened_name, e)
+        elif self._hmo is not None and self._opened_name in now:
+            idx = now.index(self._opened_name)
+            if idx != self._device_id:
+                log.warning("端口「%s」的下标从 %d 变成了 %d（别的 MIDI 设备插拔过）",
+                            self._opened_name, self._device_id, idx)
+        return note
 
     def send_cc(self, cc: int, channel: int, value: int):
         if self._hmo is None: return
@@ -365,6 +428,22 @@ class SensorHandler:
                                 self.pb_idle_sec * 1000, ", ".join(str(c + 1) for c in done))
                     self.last_cc_output = [{"cc": "PB", "channel": c, "value": 8192,
                                             "reason": "idle"} for c in done]
+
+    async def port_watchdog(self):
+        """每 3 秒看一眼 MIDI 端口列表：变了就写日志，自己那个端口没了就重新打开。
+
+        这是为"Nuendo 里的 MIDI Remote 设备突然断开连接"补的一只眼睛（2026-09-30 用户报的）。
+        原来 Bridge 全程只说得出"我发了什么"，说不出"端口还在不在"——而 `midiOutShortMsg`
+        在端口消失之后**是静默失败**的，于是现象只剩"手机显示已连接、Bridge 有输出、DAW 没反应"。
+        实测：端口列表**没变**时才什么都不写（正常运行时这份日志是安静的）。
+        """
+        while True:
+            await asyncio.sleep(3.0)
+            try:
+                for m in (self.midi, self.pad_midi):
+                    if m is not None: m.reopen_if_gone()
+            except Exception as e:                     # 体检不许打死兜底
+                log.warning("MIDI 端口体检出错：%s", e)
 
     # ── 快捷键面板（Shortcut Pad） ─────────────────────────────────────────────
 
@@ -626,7 +705,13 @@ class SensorHandler:
 
 async def handle_status(request):
     h = request.app["handler"]
-    return web.json_response({"clients": h.client_count, "preset": request.app["engine"].preset_name})
+    ports = []
+    try:
+        ports = WinMidi.port_names()          # 这台机器上"Bridge 眼里的 MIDI 输出端口"
+    except Exception:
+        pass
+    return web.json_response({"clients": h.client_count, "preset": request.app["engine"].preset_name,
+                              "midi_ports": ports})
 
 # ── SSL ─────────────────────────────────────────────────────────────────────
 
@@ -1033,6 +1118,7 @@ def _spawn_watchdogs(handler, loop=None):
         （见 `register_watchdogs` 里那段踩坑记录）。
     """
     asyncio.ensure_future(handler.pad_watchdog(), loop=loop)
+    asyncio.ensure_future(handler.port_watchdog(), loop=loop)
     if handler.pb_idle_sec > 0:
         asyncio.ensure_future(handler.pb_watchdog(), loop=loop)
 
