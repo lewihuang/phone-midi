@@ -67,10 +67,13 @@ mapping 的 `target` 增加 `type` 字段：
 
 ### 3. 兼容与废弃
 
-- `kind` 缺失时回退旧嗅探规则（`sensor=="accelerometer" and axis=="x"` → `pb`），
-  并记一条 deprecation 日志。
+- `kind` 缺失时曾回退旧嗅探规则（`sensor=="accelerometer" and axis=="x"` → `pb`）并记一条
+  deprecation 日志。
 - **移除条件**：`web/index.html` 的脚本版本号升至 v13 后的下一个版本可移除嗅探
   （届时旧缓存页面已不可能存在）。
+- ✅ **已移除（2026-10-15）**：条件早已满足（当时 `app.js` 已是 v27），嗅探代码、
+  `_legacy_pb_sniff_warned` 及其告警一并删除。现在 `kind` 缺失时直接交给配置的
+  `target.type` 决定（缺省 `cc`），不再按传感器坐标猜。
 
 ### 4. 附带修正
 

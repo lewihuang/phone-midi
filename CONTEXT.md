@@ -87,7 +87,7 @@ _Avoid_：用"模式"指模块（模式是 Digital Fader 内部的 A/B/C）；�
 |------|------|
 | **Bridge** | PC 端程序。接收手机数据（WebSocket/UDP），转换为 MIDI 消息发送到 DAW |
 | **WebSocket** | TCP 全双工协议。浏览器原生支持。MVP 用此协议通信 |
-| **UDP** | 无连接传输。延迟低但不可靠。现有 Flutter 实现用此协议 |
+| **UDP** | 无连接传输。延迟低但不可靠。早期 Flutter 手机端用过，**已废弃**（现走 WebSocket） |
 | **Virtual MIDI Port** | 虚拟 MIDI 端口（Windows: loopMIDI, macOS: IAC, Linux: snd-virmidi）。Bridge 输出到此端口 |
 | **mido** | Python MIDI 库。Bridge 使用此库发送 MIDI 消息 |
 

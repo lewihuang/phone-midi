@@ -51,6 +51,203 @@ def apply_window_icon(window) -> None:
     except Exception as e:
         log.warning("设置窗口图标失败：%s", e)
 
+# ── 任务栏存在感：精简模式也必须看得出「正在运行」 ─────────────────────────────
+# `overrideredirect(True)` 去掉标题栏时，Windows 会顺手给这个顶层窗口挂上
+# `WS_EX_TOOLWINDOW`；而**工具窗口按系统设计不进任务栏、也不进 Alt+Tab**。于是用户一切到
+# 精简模式，"MIDI Deck 在跑"在系统里唯一的迹象就没了——进程明明还活着，系统不告诉任何人。
+# 修法是改挂 `WS_EX_APPWINDOW` 并摘掉 `WS_EX_TOOLWINDOW`（实测 0x88 → 0x40008，任务栏多出
+# 一个按钮，最小化后点按钮能正常还原、置顶保持）。
+#
+# 只影响观感，绝不能影响启动：非 Windows、拿不到 HWND、调用失败一律只记日志。
+_GA_ROOT = 2
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_APPWINDOW = 0x00040000
+_SWP_NOMOVE, _SWP_NOSIZE, _SWP_NOZORDER = 0x0002, 0x0001, 0x0004
+_SWP_NOACTIVATE, _SWP_FRAMECHANGED = 0x0010, 0x0020
+
+_WIN_STYLE_API = None       # (user32, get_long, set_long) / False = 已知不可用
+
+
+def _win_style_api():
+    """user32 句柄与读写扩展样式两个函数；非 Windows 或取不到时返回 None。
+
+    64 位下必须显式设 `restype`：默认的 c_int 会把 HWND 截断成 32 位。结果只探一次。
+    """
+    global _WIN_STYLE_API
+    if _WIN_STYLE_API is not None:
+        return _WIN_STYLE_API or None
+    api = False
+    if sys.platform == "win32":
+        try:
+            u32 = ctypes.windll.user32
+            get_long = getattr(u32, "GetWindowLongPtrW", None) or u32.GetWindowLongW
+            set_long = getattr(u32, "SetWindowLongPtrW", None) or u32.SetWindowLongW
+            u32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+            u32.GetAncestor.restype = wintypes.HWND
+            get_long.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_long.restype = ctypes.c_ssize_t
+            set_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+            set_long.restype = ctypes.c_ssize_t
+            u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            u32.SetWindowPos.restype = wintypes.BOOL
+            api = (u32, get_long, set_long)
+        except Exception as e:
+            log.warning("任务栏样式：取不到 user32 接口：%s", e)
+    _WIN_STYLE_API = api
+    return _WIN_STYLE_API or None
+
+
+def _root_hwnd(window):
+    """窗口真身的 HWND，取不到返回 None。
+
+    Tk 的 `winfo_id()` 给的是它自己的内部窗口，扩展样式挂在**顶层窗口**上——拿子窗口去读
+    样式永远是 0，必须 `GetAncestor(GA_ROOT)` 往上走一层。
+    """
+    api = _win_style_api()
+    if not api:
+        return None
+    try:
+        h = api[0].GetAncestor(wintypes.HWND(window.winfo_id()), _GA_ROOT)
+        return int(h) if h else int(window.winfo_id())
+    except Exception as e:
+        log.warning("任务栏样式：取窗口 HWND 失败：%s", e)
+        return None
+
+
+# ITaskbarList（COM）：官方的"运行时新增/移除任务栏按钮"接口。
+# 为什么需要它：改完扩展样式后，任务栏（explorer 外壳）并不会立刻重新枚举按钮——实测
+# `SWP_FRAMECHANGED` 之后任务栏像素**零变化**，要等 Alt+Tab／最小化这类外壳事件才补上
+# 按钮。用户 2026-10-15 报的正是这个："任务栏的提示并没有，但是通过 Alt+Tab 选中一次以后…
+# 任务栏的提示依然存在"。AddTab 能**在不隐藏窗口的前提下**让外壳立刻加上按钮；
+# hide/show 也能达到同样效果，但那会把一个刻意隐藏／尚未映射的窗口显示出来（测试里就是
+# 这种情形），所以优先走 COM，失败才退回 hide/show。
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
+
+
+def _guid(d1, d2, d3, tail):
+    return _GUID(d1, d2, d3, (ctypes.c_ubyte * 8)(*tail))
+
+
+_CLSID_TASKBARLIST = _guid(0x56FDF344, 0xFD6D, 0x11d0,
+                           (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
+_IID_ITASKBARLIST = _guid(0x56FDF342, 0xFD6D, 0x11d0,
+                          (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
+_TASKBAR_LIST = None        # (ptr, vtable) / False = 已知不可用
+
+
+def _taskbar_list():
+    """缓存的 ITaskbarList 实例；取不到（非 Windows / COM 失败）返回 None。"""
+    global _TASKBAR_LIST
+    if _TASKBAR_LIST is not None:
+        return _TASKBAR_LIST or None
+    inst = False
+    if sys.platform == "win32":
+        try:
+            ole32 = ctypes.windll.ole32
+            ole32.CoInitialize(None)
+            ptr = ctypes.c_void_p()
+            hr = ole32.CoCreateInstance(ctypes.byref(_CLSID_TASKBARLIST), None, 1,
+                                        ctypes.byref(_IID_ITASKBARLIST), ctypes.byref(ptr))
+            if hr == 0 and ptr:
+                vt = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+                # vtable 布局：0–2 是 IUnknown，3 = HrInit，4 = AddTab，5 = DeleteTab
+                ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vt[3])(ptr)
+                inst = (ptr, vt)
+            else:
+                log.warning("任务栏样式：ITaskbarList 取不到（hr=%#x）", hr)
+        except Exception as e:
+            log.warning("任务栏样式：ITaskbarList 初始化失败：%s", e)
+    _TASKBAR_LIST = inst
+    return _TASKBAR_LIST or None
+
+
+def _taskbar_add_tab(hwnd: int) -> bool:
+    """让外壳立刻给这个窗口加上任务栏按钮。成功返回 True。"""
+    inst = _taskbar_list()
+    if not inst:
+        return False
+    try:
+        fn = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wintypes.HWND)(inst[1][4])
+        return fn(inst[0], wintypes.HWND(hwnd)) == 0
+    except Exception as e:
+        log.warning("任务栏样式：AddTab 失败：%s", e)
+        return False
+
+
+def set_taskbar_presence(window, present: bool = True) -> bool:
+    """让窗口在任务栏里有按钮（present=True），或交还系统默认（False）。
+
+    **改样式位还不够**：`SWP_FRAMECHANGED` 只让窗口自己重画，任务栏（explorer 外壳）不会
+    因此重新枚举按钮——实测改完样式任务栏像素**零变化**，必须等 Alt+Tab、最小化之类的外壳
+    事件才补上按钮。所以"确实改了样式"且要"加按钮"时，再叫一次 `ITaskbarList::AddTab`
+    强制外壳加按钮（拿不到 COM 时退回 hide/show 强制重算）。两条路都实测有效，且尺寸、
+    位置、置顶都保持不变。
+
+    切回展开态时窗口会被 Tk 重建、样式本来就是默认的，那里调用只是零副作用的保险。
+    """
+    api = _win_style_api()
+    if not api:
+        return False
+    u32, get_long, set_long = api
+    h = _root_hwnd(window)
+    if not h:
+        return False
+    try:
+        ex = int(get_long(wintypes.HWND(h), _GWL_EXSTYLE)) & 0xFFFFFFFF
+        if present:
+            new = (ex | _WS_EX_APPWINDOW) & ~_WS_EX_TOOLWINDOW
+        else:
+            new = ex & ~(_WS_EX_APPWINDOW | _WS_EX_TOOLWINDOW)
+        if new == ex:
+            return True                      # 幂等：样式已经对了，不必再折腾窗口
+        set_long(wintypes.HWND(h), _GWL_EXSTYLE, new)
+        # 光改样式位不够，必须 SWP_FRAMECHANGED 才会重新走一遍窗口框架的判定。
+        u32.SetWindowPos(wintypes.HWND(h), None, 0, 0, 0, 0,
+                         _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER
+                         | _SWP_NOACTIVATE | _SWP_FRAMECHANGED)
+        if present and not _taskbar_add_tab(h):
+            # COM 不可用时的退路：hide/show 也能逼外壳重算。只在窗口本来就可见时才做——
+            # 否则会把一个刻意隐藏／尚未映射的窗口显示出来。
+            try:
+                if u32.IsWindowVisible(wintypes.HWND(h)):
+                    was_top = bool(u32.GetWindowLongPtrW(wintypes.HWND(h), _GWL_EXSTYLE) & 0x8)
+                    u32.ShowWindow(wintypes.HWND(h), 0)      # SW_HIDE
+                    window.update_idletasks()
+                    u32.ShowWindow(wintypes.HWND(h), 5)      # SW_SHOW
+                    window.update_idletasks()
+                    if was_top:
+                        window.attributes("-topmost", True)
+            except Exception as e:
+                log.warning("任务栏样式：强制刷新失败：%s", e)
+        return True
+    except Exception as e:
+        log.warning("任务栏样式：设置失败：%s", e)
+        return False
+
+
+def taskbar_presence(window):
+    """True=有任务栏按钮 / False=没有 / None=没法判定（非 Windows 或调用失败）。
+
+    判定口径与任务栏一致：`WS_EX_APPWINDOW` 一定算；`WS_EX_TOOLWINDOW` 一定不算；
+    两个都没有时，无属主的顶层窗口也算（展开态就是这一种）。
+    """
+    api = _win_style_api()
+    if not api:
+        return None
+    h = _root_hwnd(window)
+    if not h:
+        return None
+    try:
+        ex = int(api[1](wintypes.HWND(h), _GWL_EXSTYLE)) & 0xFFFFFFFF
+    except Exception as e:
+        log.warning("任务栏样式：读取失败：%s", e)
+        return None
+    return bool(ex & _WS_EX_APPWINDOW) or not (ex & _WS_EX_TOOLWINDOW)
+
 def log_file_path() -> Path:
     """日志落盘的位置（与窗口尺寸、面板布局同一个目录）。
 
@@ -81,19 +278,37 @@ log = logging.getLogger("bridge")
 
 class WinMidiError(Exception): pass
 
+
+def _port_diff_note(prev: list[str] | None, now: list[str],
+                    gone: list[str] | None = None, fresh: list[str] | None = None) -> str:
+    """把一次端口列表变化写成一行日志文字（"少了谁 / 多了谁 / 现在共几个"）。
+
+    独立成函数是因为两处都要用：`reopen_if_gone` 里"列表变了"的告警，以及"起点时就发现
+    自己在用的端口不在"时的返回值——后者也得点出少了谁，调用方才知道刚才发生了什么。
+    """
+    if gone is None:
+        gone = [n for n in (prev or []) if n not in now]
+    if fresh is None:
+        fresh = [n for n in now if n not in (prev or [])]
+    return ("MIDI 端口列表变了：%s%s%s（现在共 %d 个：%s）"
+            % ("少了 " + ", ".join(gone) if gone else "",
+               "；" if gone and fresh else "",
+               "多了 " + ", ".join(fresh) if fresh else "",
+               len(now), " | ".join(now)))
+
+
 class WinMidi:
     MAXPNAMELEN = 32
-
-    # 上一次体检看到的端口名（None = 还没量过）。MIDI 端口**在 DAW 跑着的过程中**消失/重排，
-    # DAW 侧看到的是"设备断开连接"，而 Bridge 这边什么都没有发生过——除非它自己会看。见
-    # `SensorHandler.port_watchdog`。
-    _prev_ports: list[str] | None = None
 
     def __init__(self):
         self._winmm = ctypes.windll.winmm
         self._hmo = None
         self._device_id = 0
         self._opened_name: str | None = None   # 打开的那个端口叫什么（重新扫描时要按名字找回）
+        # 上一次体检看到的端口名（None = 还没量过）。必须是**实例**属性：
+        # 双端口配置下有两个 WinMidi（推子 + 面板），共享类级基线会让先跑的那个把它刷掉，
+        # 后跑的那个永远"列表没变"、永远看不见自己端口消失（2026-10-13 实测 pad 重开 0 次）。
+        self._prev_ports: list[str] | None = None
 
     @staticmethod
     def count_devices() -> int:
@@ -139,12 +354,15 @@ class WinMidi:
     def open(self, device_id: int | None = None, name: str | None = None):
         ports = self.list_ports()
         if not ports: raise WinMidiError("No MIDI output devices")
+        opened_name = None
         if name is not None:
             for i, n in ports:
-                if name.lower() in n.lower(): self._device_id = i; break
+                if name.lower() in n.lower(): self._device_id = i; opened_name = n; break
             else: raise WinMidiError(f"No device matching '{name}'")
         elif device_id is not None:
-            if device_id >= len(ports): raise WinMidiError(f"Device {device_id} out of range")
+            # 上界用真实设备数，不用 len(ports)：list_ports() 会跳过 caps 失败的设备，
+            # 那是**稀疏列表**——拿它的长度当设备数，会让真实存在的高号设备被误报越界。
+            if device_id >= WinMidi.count_devices(): raise WinMidiError(f"Device {device_id} out of range")
             self._device_id = device_id
         else:
             filtered = [(i, n) for i, n in ports if "microsoft" not in n.lower() and "wavetable" not in n.lower()]
@@ -155,7 +373,14 @@ class WinMidi:
                                      wintypes.DWORD(0), wintypes.DWORD(0), wintypes.DWORD(0))
         if r != 0: raise WinMidiError(f"midiOutOpen(device={self._device_id}) failed: {r}")
         self._hmo = hmo
-        self._opened_name = ports[self._device_id][1]
+        if opened_name is None:
+            # 按 device_id 打开时单独取名字：ports 是稀疏列表，ports[self._device_id] 会把
+            # 真实设备号当成列表下标用，caps 失败的设备一靠前就会张冠李戴（2026-10-13 实测）。
+            # 取不到（端点正在重建）就记 None，体检那边对 None 已有防御。
+            try: opened_name = WinMidi.device_name(self._device_id)
+            except WinMidiError:
+                log.warning("端口 %d 打开成功但名字取不到（可能在重建），本轮不记名字", self._device_id)
+        self._opened_name = opened_name
 
     def reopen_if_gone(self) -> str | None:
         """端口不见了就按**名字**重新打开它，返回"刚才发生了什么事"（没变则 None）。
@@ -164,28 +389,34 @@ class WinMidi:
         端口一旦消失，`midiOutShortMsg` 是静默失败的——Bridge 界面上照样"有信号"，而 DAW
         什么也收不到（真机上用户看到的就是"手机显示已连接、Bridge 有输出、Nuendo 说断开"）。
         这里做的只是"把 Bridge 自己这一头接回去"；DAW 那一头要不要重新认，是 DAW 的事。
+
+        2026-10-13 修了两个死角：① 第一次体检时端口已经消失，会被"记起点"挡掉；② 列表变了但
+        **数量不变**（一个消失、另一个同时出现）时，"自己的端口没了"会被变化分支吞掉。真正的
+        语义是：**每次体检都该独立判断"我现在拿着的端口还在不在"**，变化日志只是顺带。
         """
         try:
             now = self.port_names()
         except Exception as e:
             return f"量端口列表失败：{e}"      # 体检本身出错绝不能把看门狗打死
-        prev, WinMidi._prev_ports = WinMidi._prev_ports, now
+        prev = self._prev_ports
+        self._prev_ports = now
+        changed = prev is not None and now != prev
+        gone = [n for n in prev if n not in now] if prev is not None else []
+        fresh = [n for n in now if n not in prev] if prev is not None else []
+        note = None
         if prev is None:
             log.info("MIDI 端口列表（体检起点）：%s", " | ".join(now) or "（空）")
-            return None
-        if now == prev:
-            return None
-        gone = [n for n in prev if n not in now]
-        fresh = [n for n in now if n not in prev]
-        note = ("MIDI 端口列表变了：%s%s%s（现在共 %d 个：%s）"
-                % ("少了 " + ", ".join(gone) if gone else "",
-                   "；" if gone and fresh else "",
-                   "多了 " + ", ".join(fresh) if fresh else "",
-                   len(now), " | ".join(now)))
-        log.warning("%s", note)
+            if self._opened_name and self._opened_name not in now:
+                # 起点时就发现自己在用的端口不在：返回值里也要点出"少了谁"（调用方把 note 写日志）
+                note = _port_diff_note(prev, now, gone=[self._opened_name], fresh=now)
+        if changed:
+            note = _port_diff_note(prev, now, gone=gone, fresh=fresh)
+            log.warning("%s", note)
+
+        # 只有"端口真的没了"时才允许再按名字重开；重开失败（端口还没回来）后，
+        # 下一轮体检的 `self._hmo is not None` 会阻止它再试——必须把 _hmo 置 None，
+        # 否则端口一旦回来，这个实例就永远卡在"句柄死了"的状态（2026-10-13 实测）。
         if self._hmo is not None and self._opened_name and self._opened_name not in now:
-            # 我们正拿着的那个端口没了（或者被换了身份）。句柄还"在"，但发出去的东西去不了任何
-            # 地方——静静重开一次，下次按下还能到。重开失败也不抛：下一轮体检会再试。
             log.warning("正在用的端口「%s」已不在列表里，按名字重新打开", self._opened_name)
             self._hmo = None
             try:
@@ -193,6 +424,14 @@ class WinMidi:
                 log.info("端口「%s」已重新打开（device=%d）", self._opened_name, self._device_id)
             except Exception as e:
                 log.warning("重新打开「%s」失败：%s", self._opened_name, e)
+        elif self._hmo is None and self._opened_name and self._opened_name in now:
+            # 上一轮重开失败（端口还没回来），现在它回来了——再试一次，把句柄接回去。
+            log.info("端口「%s」已回到列表，重试打开", self._opened_name)
+            try:
+                self.open(name=self._opened_name)
+                log.info("端口「%s」已重新打开（device=%d）", self._opened_name, self._device_id)
+            except Exception as e:
+                log.warning("重试打开「%s」失败：%s", self._opened_name, e)
         elif self._hmo is not None and self._opened_name in now:
             idx = now.index(self._opened_name)
             if idx != self._device_id:
@@ -243,13 +482,6 @@ def pb_from_norm(norm: float) -> int:
     The phone mirrors this formula so its on-screen count matches what the DAW receives.
     """
     return max(0, min(16383, 8192 + int(round((norm * 2 - 1) * 8192))))
-
-
-# ADR 0003: target type used to be inferred from the source coordinates
-# (`sensor == "accelerometer" and axis == "x"`). Messages now declare it. The legacy
-# inference is kept for one version and announced once, so an old cached page cannot
-# silently send pitch bend data to a CC.
-_legacy_pb_sniff_warned = False
 
 
 class EmaSmoother:
@@ -673,18 +905,6 @@ class SensorHandler:
             value = float(obj.get("value", 0))
             kind = obj.get("kind")
             if kind not in ("cc", "pb"): kind = None
-            if kind is None:
-                # ADR 0003 legacy fallback. Remove one version after the web bundle moves
-                # past v13, once no cached page can still be talking to us.
-                global _legacy_pb_sniff_warned
-                if sensor == "accelerometer" and axis == "x":
-                    kind = "pb"
-                if not _legacy_pb_sniff_warned:
-                    _legacy_pb_sniff_warned = True
-                    log.warning(
-                        "收到不含 kind 的旧版消息（sensor=%s axis=%s）。目标类型应显式声明"
-                        "（ADR 0003），未声明时改由配置的 target.type 决定。请刷新手机页面。",
-                        sensor, axis)
             cc_list = []
             for out_kind, cc, ch, val, norm in self.engine.process(sensor, axis, value, kind_override=kind):
                 if out_kind == "pb":
@@ -886,6 +1106,12 @@ def _local_ip():
 WINDOW_PREFS = Path(os.environ.get("APPDATA") or os.path.expanduser("~")) / "phone-midi-bridge" / "window.json"
 _PREF_PAIRS = ("compact", "compact_pos", "standard", "standard_pos")
 
+# Bridge 监听端口。用户 2026-10-15："我手动修改的端口是 38765，软件并没有保存，依然回到了
+# 8765"——端口和窗口尺寸一样属于"用户改过就该记住"的东西，所以落进同一份 prefs。
+# 8765 会撞绿联 NAS 客户端（它固定占 8765/8766），默认值保留但用户可以改掉并**被记住**。
+DEFAULT_BRIDGE_PORT = 8765
+PORT_MIN, PORT_MAX = 1024, 65535
+
 def load_window_prefs() -> dict:
     try:
         with open(WINDOW_PREFS, "r", encoding="utf-8") as f:
@@ -900,6 +1126,11 @@ def load_window_prefs() -> dict:
             v = data.get(key)
             if isinstance(v, str) and v.strip():
                 out[key] = v.strip()
+        # 记住的监听端口：只认合法范围里的真正整数（bool 是 int 的子类，单独挡掉）。
+        # 坏值一律丢掉，调用方退回 DEFAULT_BRIDGE_PORT。
+        v = data.get("port")
+        if isinstance(v, int) and not isinstance(v, bool) and PORT_MIN <= v <= PORT_MAX:
+            out["port"] = v
         return out
     except Exception:
         return {}
@@ -1078,23 +1309,6 @@ def pad_note_in_layout(layout, trigger_id: int) -> int:
             if pad_note_valid(note): return note
     return pad_note_for(tid)
 
-def pad_cell_in_layout(layout, trigger_id: int) -> dict:
-    """按触发编号取那一格（页 = 编号 // 8，格 = 编号 % 8）；越界或缺失给空 dict。
-
-    给 PC 端的"按了哪一个"提示用——它显示的是**布局里的文字**，所以和手机上看到的一致。
-    """
-    try:
-        page_index, slot = divmod(int(trigger_id), PAD_SLOTS)
-    except (TypeError, ValueError):
-        return {}
-    pages = layout.get("pages") if isinstance(layout, dict) else None
-    if isinstance(pages, list) and 0 <= page_index < len(pages):
-        page = pages[page_index]
-        cells = page.get("cells") if isinstance(page, dict) else None
-        if isinstance(cells, list) and 0 <= slot < len(cells) and isinstance(cells[slot], dict):
-            return cells[slot]
-    return {}
-
 def pad_duplicate_notes(layout) -> dict[int, int]:
     """音符 → 出现次数（>1 即为重复）。重复不会禁止，但编辑器要把它显示出来。"""
     counts: dict[int, int] = {}
@@ -1233,6 +1447,17 @@ def _port_in_use(host: str, port: int) -> bool:
     except OSError:
         return False
 
+def port_in_use_msg(port: int) -> str:
+    """端口被占用时给用户看的话。
+
+    用户 2026-10-15："软件提示了会与另一个 MIDI Deck 冲突，但事实上大多数时候端口冲突的
+    并不是另一个 MIDI Deck，只需要提示用户端口冲突让用户修改端口即可。"
+    实测也是如此：本机 8765 是被**绿联 NAS 客户端**占着的，跟 MIDI Deck 没有任何关系。
+    所以这里只说事实（端口被占用）+ 能怎么办（换一个端口），**不猜是谁占的**。
+    """
+    return (f"端口 {port} 已被占用，无法启动。"
+            f"请换一个端口再试（在上方 port 输入框里改，改完会被记住）。")
+
 def bind_server_socket(host: str, port: int, backlog: int = 128):
     """Bind the listening socket, balancing two Windows behaviours that pull opposite ways.
 
@@ -1252,7 +1477,7 @@ def bind_server_socket(host: str, port: int, backlog: int = 128):
     Raises OSError; the message says which of the two cases it was.
     """
     if _port_in_use(host, port):
-        raise OSError(f"端口 {port} 已被占用：已经有一个 Bridge 在监听（手机的连接会进那一个）")
+        raise OSError(port_in_use_msg(port))
 
     exclusive = hasattr(socket, "SO_EXCLUSIVEADDRUSE")
     opts = [socket.SO_EXCLUSIVEADDRUSE, socket.SO_REUSEADDR] if exclusive else [socket.SO_REUSEADDR]
@@ -1269,7 +1494,7 @@ def bind_server_socket(host: str, port: int, backlog: int = 128):
             # Only fall through to the reuse flag when nobody is listening: that means the
             # port is merely held by connections in TIME_WAIT from a previous stop.
             if _port_in_use(host, port):
-                raise OSError(f"端口 {port} 已被占用：已经有一个 Bridge 在监听（手机的连接会进那一个）")
+                raise OSError(port_in_use_msg(port))
     raise last
 
 # ── GUI ─────────────────────────────────────────────────────────────────────
@@ -1363,6 +1588,8 @@ class BridgeApp:
         self.root.title("MIDI Deck")
         self.root.attributes("-topmost", False)
         self.root.minsize(400, 340)
+        # 从精简态退出、或 STOP 后回到设置页时，把精简态可能留下的任务栏样式摘干净。
+        set_taskbar_presence(self.root, False)
         self._set_geometry(self._standard_spec())
 
         # Header
@@ -1410,7 +1637,10 @@ class BridgeApp:
         cfg = tk.Frame(self.root, bg=BG)
         cfg.pack(fill=tk.X, padx=20, pady=(4, 0))
         tk.Label(cfg, text="port", font=FONT_BOLD, bg=BG, fg=FG).pack(side=tk.LEFT)
-        self._port_var = tk.StringVar(value="8765")
+        # 上次用过的端口优先（用户 2026-10-15：改过的端口必须被记住，否则每次都要重填，
+        # 而且会退回 8765 撞上绿联 NAS）。没有记录时才用默认值。
+        _saved_port = self._win_prefs.get("port") or DEFAULT_BRIDGE_PORT
+        self._port_var = tk.StringVar(value=str(_saved_port))
         port_entry = tk.Entry(cfg, textvariable=self._port_var, font=FONT, bg=SURFACE, fg=FG,
                               insertbackground=FG, relief=tk.FLAT, width=6, justify=tk.CENTER,
                               highlightbackground=BORDER, highlightthickness=1)
@@ -1468,6 +1698,10 @@ class BridgeApp:
             # instead of a 420x150 bar). Minimum and default must move together.
             self.root.minsize(COMPACT_MIN_W, COMPACT_MIN_H)
             self._set_geometry(self._compact_spec())
+            # 就去掉标题栏那一下，Windows 会给窗口挂上 WS_EX_TOOLWINDOW，而工具窗口不进任务栏
+            # ⇒ 用户切到精简模式后，"MIDI Deck 在跑"在系统里就查不到了。这里把样式改回
+            # "应用窗口"，任务栏按钮（连同 Alt+Tab 里的一项）就回来了。失败只记日志，不影响启动。
+            set_taskbar_presence(self.root, True)
 
             body = tk.Frame(self.root, bg=BG, highlightbackground=BORDER, highlightthickness=1)
             body.pack(fill=tk.BOTH, expand=True)
@@ -1509,6 +1743,8 @@ class BridgeApp:
             # canvas and the requested geometry is re-applied as the last word.
             self.root.update_idletasks()
             self._set_geometry(self._compact_spec())
+            # 拖过/拉伸过之后 Tk 可能重建过窗口，样式再确认一次（幂等，代价一次 API 调用）。
+            set_taskbar_presence(self.root, True)
 
             self._status_timer = self.root.after(50, self._poll_status)
             return
@@ -1517,6 +1753,9 @@ class BridgeApp:
         self.root.title("MIDI Deck")
         self.root.minsize(400, 340)
         self.root.attributes("-topmost", False)
+        # 标题栏回来了，任务栏按钮自然也在；这里只是把精简态可能留下的样式**摘干净**
+        # （展开态本来就是"应用窗口"，幂等；Tk 重建过窗口时这一下才是决定性的）。
+        set_taskbar_presence(self.root, False)
         # 展开态恢复上次关闭时的尺寸（没有记录过就还是原来的 480x420）
         self._set_geometry(self._standard_spec())
 
@@ -1627,11 +1866,6 @@ class BridgeApp:
     def _screen(self):
         return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
 
-    def _default_spec(self, w: int, h: int) -> str:
-        """屏幕居中（没有记忆位置时的兜底）。"""
-        sw, sh = self._screen()
-        return f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}"
-
     def _clamp_pos(self, pos, w, h):
         """Keep the whole window on screen (换显示器/分辨率后不会丢)。pos=None → 居中。"""
         sw, sh = self._screen()
@@ -1705,6 +1939,11 @@ class BridgeApp:
         """
         try:
             self._remember_live_geometry()
+            # 端口也在这里存一次：用户可能改了端口、还没点 START 就退出（点 START 时那条
+            # 自然会存，但那条走不到就白改了——而默认 8765 会撞上绿联 NAS）。
+            if hasattr(self, "_port_var"):
+                try: self._win_prefs["port"] = self._port_from_var()
+                except Exception: pass
             save_window_prefs(self._win_prefs)
         except Exception as e:
             log.warning("记录窗口位置失败：%s", e)
@@ -2032,14 +2271,6 @@ class BridgeApp:
         self._pad_cells[self._pad_sel]["label"].configure(text=text)
         self._pad_commit_soon()
 
-    def _pad_edit_note(self):
-        """**已废弃**：音符不再自由输入（用户 2026-09-26："删除音符自由输入的功能，仅使用软件提供的默认值"）。
-
-        留着这个方法只是为了让旧调用点不会 AttributeError；音符现在是**位置派生**的
-        （`36 + 触发编号`，见 `_pad_clean_cell`），编辑器里的 `N36` 角标只是显示这个结果。
-        """
-        self._pad_status("音符由软件按位置固定给出（第几格就是第几个），不支持手改")
-
     def _pad_edit_title(self):
         page = self._pad_page_data()
         title = self._pad_title_var.get()[:PAD_TEXT_MAX]
@@ -2198,6 +2429,20 @@ class BridgeApp:
         name = var.get() if var is not None else PAD_SAME_PORT
         return None if name in ("", PAD_SAME_PORT) else name
 
+    def _port_from_var(self) -> int:
+        """输入框里的端口，非法就退回上次记住的值/默认值（绝不因为手滑输错就崩）。"""
+        raw = (self._port_var.get() or "").strip()
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            v = 0
+        if PORT_MIN <= v <= PORT_MAX:
+            return v
+        fallback = self._win_prefs.get("port") or DEFAULT_BRIDGE_PORT
+        if raw:
+            log.warning("端口「%s」不合法（需 %d–%d），改用 %d", raw, PORT_MIN, PORT_MAX, fallback)
+        return fallback
+
     def _on_start(self):
         sel = self._tree.selection()
         if not sel:
@@ -2208,10 +2453,12 @@ class BridgeApp:
         idx = self._tree.index(sel[0])
         device_id = self._port_ids[idx]
         device_name = self._tree.item(sel[0], "values")[0]
-        port = int(self._port_var.get() or "8765")
-        # 记住这次选的 MIDI 输出与面板端口（用户要求：下次打开直接回到上次的选择）
+        port = self._port_from_var()
+        self._port_var.set(str(port))       # 回填钳正过的值，输入框与实际监听一致
+        # 记住这次选的 MIDI 输出、面板端口与监听端口（用户要求：下次打开直接回到上次的选择）
         self._win_prefs["midi_out"] = device_name.rstrip(" *")
         self._win_prefs["pad_port"] = self._pad_port_var.get()
+        self._win_prefs["port"] = port
         save_window_prefs(self._win_prefs)
         self._start_server(device_id, device_name, port, pad_name=self._pad_selection())
 
@@ -2293,8 +2540,7 @@ class BridgeApp:
                     except Exception: pass
                 msg = str(e)
                 if isinstance(e, OSError) and _port_in_use("0.0.0.0", port):
-                    msg = (f"端口 {port} 已被占用：已经有一个「MIDI Deck」在运行，"
-                           f"手机的连接进的是那一个。请先关闭它（或换一个端口）再启动。")
+                    msg = port_in_use_msg(port)
                 self._start_result = {"ok": False, "msg": msg}; return
 
             log.info("Starting on %s://0.0.0.0:%d", protocol, port)
@@ -2513,8 +2759,7 @@ def _cli_mode(args):
             sock = bind_server_socket(args.host, args.port)
         except OSError as e:
             if _port_in_use(args.host or "0.0.0.0", args.port):
-                log.error("端口 %d 已被占用：已经有一个 Bridge 在运行（手机的连接会进那一个）。"
-                          "请先关闭它，或用 --port 换一个端口。", args.port)
+                log.error("%s", port_in_use_msg(args.port))
             else:
                 log.error("端口 %d 无法监听：%s", args.port, e)
             sys.exit(1)

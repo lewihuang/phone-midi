@@ -34,6 +34,19 @@ def check(name, ok, detail=""):
     if not ok:
         fails.append(name)
 
+def _ex_bits(window) -> int:
+    """窗口顶层 HWND 的扩展样式位（读不到时返回 0，断言会因此失败而不是崩）。"""
+    import ctypes
+    from ctypes import wintypes
+    h = server._root_hwnd(window)
+    if not h:
+        return 0
+    u32 = ctypes.windll.user32
+    get_long = getattr(u32, "GetWindowLongPtrW", None) or u32.GetWindowLongW
+    get_long.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_long.restype = ctypes.c_ssize_t
+    return int(get_long(wintypes.HWND(h), server._GWL_EXSTYLE)) & 0xFFFFFFFF
+
 # ── value / bar maths (no window needed) ─────────────────────────────────────
 pb_out = [{"cc": "PB", "channel": 0, "value": 8809}]
 cc_out = [{"cc": 1, "channel": 0, "value": 64}]
@@ -135,6 +148,12 @@ try:
     check("精简态置顶", bool(app.root.attributes("-topmost")), f"topmost={app.root.attributes('-topmost')}")
     check("精简态无标题栏", bool(app.root.overrideredirect()),
           f"overrideredirect={app.root.overrideredirect()}")
+    # 去掉标题栏会让 Windows 给窗口挂上 WS_EX_TOOLWINDOW，而工具窗口按设计不进任务栏
+    # ⇒ 用户切到精简模式后，系统里就再也看不出「MIDI Deck 在跑」了。这里断言样式确实被改回
+    # 「应用窗口」：任务栏按钮（以及 Alt+Tab 里的一项）由这一个位决定。
+    _tb = server.taskbar_presence(app.root)
+    check("精简态仍在任务栏（看得出在运行）", _tb is True,
+          f"taskbar_presence={_tb}（None=本平台无法判定）")
     check("精简态默认 420x108（细长条）",
           app._win_size == (server.COMPACT_MIN_W, server.COMPACT_DEF_H),
           f"requested={app._win_size}")
@@ -181,6 +200,9 @@ try:
           app._win_size == (480, 420) and not app.root.attributes("-topmost")
           and not app.root.overrideredirect() and app.root.minsize() == (400, 340),
           f"requested={app._win_size} min={app.root.minsize()} overrideredirect={app.root.overrideredirect()}")
+    check("返回展开态后任务栏样式摘干净（不留精简态的痕迹）",
+          _ex_bits(app.root) & (server._WS_EX_APPWINDOW | server._WS_EX_TOOLWINDOW) == 0,
+          f"exstyle={_ex_bits(app.root):#010x}（APPWINDOW/TOOLWINDOW 都不该有）")
 
     # ── 窗口几何与端口记忆 ─────────────────────────────────────────────────
     # 契约在 2026-09-26 变了（spec D30）：用户要求"记住用户上一次调整的软件 ui 大小及位置"，
@@ -275,12 +297,73 @@ try:
           f"{server.load_window_prefs()}")
 
     # 启动失败必须可见
-    app._show_error("端口 8765 已被占用：已经有一个「MIDI Deck」在运行")
+    app._show_error(server.port_in_use_msg(8765))
     app.root.update_idletasks()
     texts = [w.cget("text") for w in app.root.winfo_children() if isinstance(w, tk.Label)]
     check("端口被占用时窗口显示错误而不是运行中",
           app._mode == "setup" and any("启动失败" in t for t in texts),
           next((t for t in texts if t.startswith("启动失败")), "no error label"))
+    # 用户 2026-10-15：文案不该猜是谁占了端口（本机 8765 实际是被绿联 NAS 占的，跟 MIDI Deck 无关）
+    _msg = server.port_in_use_msg(8765)
+    check("端口占用文案只说事实与建议，不归因于另一个 MIDI Deck",
+          "已被占用" in _msg and "换一个端口" in _msg
+          and "MIDI Deck" not in _msg and "Bridge" not in _msg,
+          _msg)
+
+    # ── 监听端口要记住（用户 2026-10-15：改成 38765 后每次都被打回 8765）─────────
+    server.save_window_prefs({"port": 38765})
+    check("端口记录：合法的监听端口能读回", server.load_window_prefs().get("port") == 38765,
+          f"{server.load_window_prefs()}")
+    server.save_window_prefs({"port": "38765"})
+    check("端口记录：字符串形式不认（必须是真整数）",
+          "port" not in server.load_window_prefs(), f"{server.load_window_prefs()}")
+    server.save_window_prefs({"port": 70000})
+    check("端口记录：超出范围不认（>65535）",
+          "port" not in server.load_window_prefs(), f"{server.load_window_prefs()}")
+    server.save_window_prefs({"port": 80})
+    check("端口记录：特权端口不认（<1024）",
+          "port" not in server.load_window_prefs(), f"{server.load_window_prefs()}")
+    server.save_window_prefs({"port": True})
+    check("端口记录：bool 不算整数（True 是 int 的子类，得单独挡）",
+          "port" not in server.load_window_prefs(), f"{server.load_window_prefs()}")
+
+    # 设置页应该把记住的端口填进输入框，而不是永远 8765
+    server.save_window_prefs({"port": 38765, "midi_out": "PhonePad"})
+    app._win_prefs = server.load_window_prefs()
+    app._compact = False
+    app._build_setup()
+    app.root.update_idletasks()
+    check("设置页：端口输入框填的是上次记住的端口（不是 8765）",
+          app._port_var.get() == "38765", f"_port_var={app._port_var.get()!r}")
+
+    # 手滑输入非法值时不能崩，且要退回记住的值
+    app._port_var.set("abc")
+    check("端口输入非法时退回记住的值（不抛异常）", app._port_from_var() == 38765,
+          f"-> {app._port_from_var()}")
+    app._port_var.set("99999")
+    check("端口超范围时退回记住的值", app._port_from_var() == 38765,
+          f"-> {app._port_from_var()}")
+    app._port_var.set("")
+    check("端口留空时退回记住的值", app._port_from_var() == 38765,
+          f"-> {app._port_from_var()}")
+    app._port_var.set("50000")
+    check("端口合法时原样采用", app._port_from_var() == 50000,
+          f"-> {app._port_from_var()}")
+
+    # 点 START 会把端口落盘（下次打开才回得来）
+    server.save_window_prefs({})
+    app._win_prefs = {}
+    app._port_var.set("38765")
+    if app._tree.get_children():
+        app._tree.selection_set(app._tree.get_children()[0])
+        _dev_id = app._port_ids[0]
+        app._start_server = lambda *a, **k: None      # 只验"记住"，不真的起服务器
+        app._on_start()
+        check("点 START 会把端口写进 prefs（下次启动才回得来）",
+              server.load_window_prefs().get("port") == 38765,
+              f"{server.load_window_prefs()}")
+    else:
+        check("点 START 会把端口写进 prefs（下次启动才回得来）", False, "没有可用 MIDI 端口，跳过")
 finally:
     try: app.root.destroy()
     except Exception: pass

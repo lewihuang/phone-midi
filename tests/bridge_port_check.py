@@ -48,22 +48,36 @@ def check(name, ok, detail=""):
 
 
 class FakeWinMidi(server.WinMidi):
-    """只替掉"系统里有哪些端口"与"打开/关闭"（真 winmm 不能碰），重开逻辑走 `WinMidi` 真实现。"""
+    """只替掉"系统里有哪些端口"与"打开/关闭"（真 winmm 不能碰），重开逻辑走 `WinMidi` 真实现。
 
-    def __init__(self):
-        self.ports = ["Microsoft GS Wavetable Synth", "FakeFader", "PhonePad"]
+    端口表挂在**类**上（`self.__class__.ports`）：真实场景里两个 WinMidi 实例看的是同一个
+    系统的同一张表；也正因为挂类上，子类（如 Blink）对 port_names 的重写才会被实例方法
+    里的 self.port_names() 运行时查到。
+    """
+
+    ports = ["Microsoft GS Wavetable Synth", "FakeFader", "PhonePad"]
+
+    def __init__(self, ports=None):
+        # ports 参数 = 这份桩"系统里有哪些端口"（默认每实例一份的类表；传入外部列表则
+        # 两个实例共享同一张表，用于双端口回归——见第 6b 条）。
+        if ports is not None:
+            self.ports = ports
         self._winmm = None
         self._hmo = None
         self._device_id = 0
         self._opened_name = None
+        self._prev_ports = None    # 必须建：reopen_if_gone 第一步就读它，删了会 AttributeError
         self.opened = []            # (名字, 下标)，按次记
         self.closed = 0
 
     def port_names(self):
         return list(self.ports)
 
+    def count_devices(self):
+        return len(self.port_names())
+
     def list_ports(self):
-        return list(enumerate(self.ports))
+        return list(enumerate(self.port_names()))
 
     def open(self, device_id=None, name=None):
         if name is not None:
@@ -86,7 +100,6 @@ class FakeWinMidi(server.WinMidi):
 
 
 def with_stub(ports=None):
-    FakeWinMidi._prev_ports = None               # 每次体检从"起点"重新量
     m = FakeWinMidi()
     if ports:
         m.ports = list(ports)
@@ -151,14 +164,42 @@ except Exception as e:                              # noqa: BLE001
 check("重开失败不抛，下一轮能认出端口回来了", ok, detail)
 
 # ── 6. 别人的端口插拔导致下标位移：只提示，不重开 ────────────────────────────
+# 注意顺序：先体检一次建立基线，再插别的端口——否则 prev=None（起点），"多了谁"不会被
+# 当成变化（这正是旧逻辑把"起点时端口已消失"吞掉的同一个坑）。
 m = with_stub()
 m.open(name="PhonePad")
+m.reopen_if_gone()                                 # 基线：当前列表里 PhonePad 在下标 2
 m.ports.insert(1, "新插上的键盘")                  # PhonePad 从 2 挪到 3
 before = len(m.opened)
 note = m.reopen_if_gone()
 check("下标位移只提示、不重开（端口本身还在）",
       isinstance(note, str) and "多了 新插上的键盘" in note and len(m.opened) == before,
       f"{note} / opened={m.opened}")
+
+# ── 6b. 双实例共存：两个 WinMidi 看同一张端口表，各自都要能看见自己端口消失 ──
+# 2026-10-13 实机 bug：_prev_ports 曾是**类**属性，先跑的推子实例把它刷新后，
+# 面板实例读到 now == prev 直接 return —— 持有 PhonePad 的那个实例永远看不见它消失，
+# 重开 0 次（实测）。当时这份测试每个用例只建一个实例，所以测不出来。
+shared = ["Microsoft GS Wavetable Synth", "loopMIDI Port", "PhonePad"]
+fader = FakeWinMidi(ports=shared); fader.open(name="loopMIDI Port")
+pad = FakeWinMidi(ports=shared); pad.open(name="PhonePad")
+fader.reopen_if_gone(); pad.reopen_if_gone()          # 各自建基线
+shared.remove("PhonePad")                              # PhonePad 被删掉（以新身份重建前的瞬间）
+fader.reopen_if_gone(); pad.reopen_if_gone()
+shared.append("PhonePad")                              # 以新身份回来
+fader.reopen_if_gone(); pad.reopen_if_gone()
+check("双实例共存：面板实例也能看见自己端口消失并重开",
+      pad.opened == [("PhonePad", 2), ("PhonePad", 2)],
+      f"pad.opened={pad.opened}（修复前只有初始那一次，没有重开）")
+
+# ── 6c. 同一进程 STOP→START：新实例的第一次体检必须重新记起点 ────────────────
+# 旧类级基线跨 handler 存活，第二个 handler 的第一次体检 prev is not None，
+# "体检起点"日志被吞（日志实证：15:08:44 那次 START 后没有起点行）。
+fresh = FakeWinMidi(ports=shared); fresh.open(name="PhonePad")
+check("STOP→START 后新实例重新记起点（不再被旧基线吞掉）",
+      fresh._prev_ports is None and fresh.reopen_if_gone() is None
+      and fresh._prev_ports == shared,
+      f"_prev_ports={fresh._prev_ports}")
 
 # ── 7. 体检任务真的在"正在跑的循环"上（pad / PB 兜底同一处） ─────────────────
 async def watchdog_wiring(pb_idle_sec):

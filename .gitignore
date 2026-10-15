@@ -24,6 +24,9 @@ android/.gradle/
 .DS_Store
 Thumbs.db
 
+# Agent 运行时的排查草稿（可丢弃，别提交）
+.box-agent-scratch/
+
 # 打包产物（迁移包）
 release/
 nul

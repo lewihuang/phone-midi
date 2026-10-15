@@ -1,4 +1,4 @@
-# Roadmap — Phone MIDI Controller
+# Roadmap — MIDI Deck
 
 ## Milestone 1: 传感器→MIDI 通路（✅ 已完成 2026-06-30）
 
@@ -52,7 +52,7 @@
 | **预设保存/加载** | 中 | 多套校准 / 映射预设 |
 | **Web 配置完整 UI** | 大 | 可视化编辑 mapping |
 | **多路同时控制** | 中 | 协议 `i=0` 硬编码待解，一部手机多 CC |
-| **Mode C 揉弦** | 中 | 🔄 目标重定义为模拟小提琴揉弦：[spec/mode-c-vibrato.md](spec/mode-c-vibrato.md)（设计已确认，待实现）。旧"摇晃弯音"实现见 [spec/mode-c-shake.md](spec/mode-c-shake.md) + [ADR 0003](adr/0003-explicit-target-kind.md) |
+| **Mode C 摇晃弯音** | — | ✅ 已定型（2026-09-19）：`accelerometer.x` 去重力线性加速度 → 弯音值（±40 m/s²，无滤波/无门限/无校准，静止即精确居中）。**曾经的"揉弦"方案已回退并搁置**（保留为实验件，不挂在任何模式上）→ [mode-c-shake.md](spec/mode-c-shake.md) · [mode-c-vibrato.md](spec/mode-c-vibrato.md) · [changelog](changelog/2026-09-19_mode-c-vibrato.md) |
 | **14-bit CC** | 小 | 高精度输出（Pitch Bend 已于 2026-09-17 改为真 14-bit） |
 | **Android 原生** | 大 | 原生 APK |
 | **macOS 支持** | 中 | 换掉 ctypes winmm 后端 |
@@ -77,4 +77,4 @@
 
 ---
 
-*最后更新: 2026-09-27*
+*最后更新: 2026-10-15*

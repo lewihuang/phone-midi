@@ -199,7 +199,8 @@ Get-Process | Where-Object { $_.ProcessName -match '(?i)nuendo|cubase' -or ($_.P
    （`pad.json` = 六页按钮布局，**最关键**；另有 `fader.json` / `xy.json` / `ui.json` / `window.json`）
 3. 启动 Bridge → 端口列表选推子端口，**「面板端口」选 `PhonePad`**（分离端口，避免音源跟着弹音）。
 
-**怎么验**：Bridge 窗口显示形如 `https://192.168.x.x:8765` 的网址；手机浏览器打开它，
+**怎么验**：Bridge 窗口显示形如 `https://192.168.x.x:8765` 的网址（端口以窗口里实际填的为准，
+改过会被记住）；手机浏览器打开它，
 能看到三个模块；进 Shortcut Pad 后六页的文字/颜色/音符与 §2.1 一致。
 
 ### 阶段 2 —— 让 DAW 生成它自己的配置

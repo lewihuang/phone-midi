@@ -52,7 +52,8 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
   首次访问需在浏览器里接受一次证书警告；证书到期前 30 天或本机 IP 变化时会自动重签。
 - 若日志出现「无 HTTPS」告警，说明证书生成失败（多为缺少 `cryptography`），
   此时手机传感器不可用，请先 `pip install -r bridge/requirements.txt`。
-- 端口默认 8765，可在 GUI 里改。
+- 端口默认 8765，可在 GUI 里改；**改过之后会被记住**（下次启动直接用你填的那个）。
+  注意 8765/8766 被绿联 NAS 客户端固定占用，若提示端口被占用，换一个即可（例如 38765）。
 
 ### 5. 跟手调参 / 延迟诊断
 
