@@ -33,6 +33,39 @@ def _base_dir() -> Path:
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent
 
+def _web_dir(base_dir: Path):
+    """Locate the static web root, or None when there is nothing usable.
+
+    **Never return a drive root.** `Path("F:/").name` is an empty string, and aiohttp's
+    `StaticResource.__init__` does `Path(directory).resolve(strict=True)` followed by
+    `is_dir()`; a drive root *is* a directory, so it passes that guard and then dies with
+    `WindowsPath('F:/') has an empty name`. That is exactly how a packaged build (where
+    `base_dir` is `_MEIPASS` or `dist/`) used to fail: the old
+    `if not web_dir.exists(): web_dir = base_dir.parent / "web"` walk-up kept climbing until
+    it reached `F:/`, which exists, and handed it to `add_static` — every START attempt
+    failed with an error that names a path nobody recognises.
+
+    So: only candidates that actually look like our web root (a directory with index.html)
+    are accepted, the walk-up is bounded, and "no web dir" degrades to a logged warning
+    instead of taking the whole server start down with it.
+    """
+    candidates = [base_dir / "web"]
+    p = base_dir
+    for _ in range(3):                      # 源码模式 / dist / _MEIPASS 的几种布局
+        p = p.parent
+        if not p.name:                      # 盘符根或空路径：再往上已经不是"项目目录"了
+            break
+        candidates.append(p / "web")
+    for cand in candidates:
+        try:
+            if not cand.name or not cand.is_dir() or not (cand / "index.html").exists():
+                continue
+            return cand
+        except OSError:
+            continue
+    log.warning("没有找到可用的 web 目录（base_dir=%s），手机端页面将不可用", base_dir)
+    return None
+
 def _icon_path() -> Path:
     """窗口图标文件：打包后在 `_MEIPASS` 根目录（spec 的 `datas` 放进去的），源码模式在 `bridge/` 下。"""
     return _base_dir() / "midi-deck.ico"
@@ -1765,7 +1798,7 @@ class BridgeApp:
         ip = _local_ip()
         url = f"{protocol}://{ip}:{port}"
         tk.Label(self.root, text=url, font=FONT_H2, bg=BG, fg=FG).pack(pady=(0, 2))
-        tk.Label(self.root, text="手机浏览器打开上方网址即可（主页面选功能模块）", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
+        tk.Label(self.root, text="手机/平板浏览器打开上方网址（手机选模块，平板自动进平板版）", font=FONT_HINT, bg=BG, fg=FG_DIM).pack(pady=(0, 12))
         if protocol == "http":
             tk.Label(self.root, text="⚠ 无 HTTPS：手机传感器将无法启动（见日志）", font=FONT_HINT, bg=BG, fg=AMBER).pack(pady=(0, 8))
 
@@ -2524,9 +2557,8 @@ class BridgeApp:
                 app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
                 app.router.add_get("/ws", handler.handle)
                 app.router.add_get("/status", handle_status)
-                web_dir = base_dir / "web"
-                if not web_dir.exists(): web_dir = base_dir.parent / "web"
-                if web_dir.exists():
+                web_dir = _web_dir(base_dir)
+                if web_dir is not None:
                     ipath = web_dir / "index.html"
                     async def _idx(r): return web.FileResponse(ipath)
                     app.router.add_get("/", _idx)
@@ -2728,9 +2760,8 @@ def _cli_mode(args):
     app["handler"] = handler; app["midi"] = midi; app["engine"] = engine
     app.router.add_get("/ws", handler.handle); app.router.add_get("/status", handle_status)
 
-    web_dir = base_dir / "web"
-    if not web_dir.exists(): web_dir = base_dir.parent / "web"
-    if web_dir.exists():
+    web_dir = _web_dir(base_dir)
+    if web_dir is not None:
         ipath = web_dir / "index.html"
         async def _idx(r): return web.FileResponse(ipath)
         app.router.add_get("/", _idx); app.router.add_static("/", web_dir, show_index=False)

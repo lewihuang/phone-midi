@@ -47,6 +47,10 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
 手机和电脑在同一局域网。启动后 Bridge 会显示形如 `https://192.168.x.x:8765` 的网址，
 手机浏览器打开它，从功能模块列表里选一个（Digital Fader / Shortcut Pad / X/Y Pad）。
 
+- **平板会自己进平板页**：同一个网址，视口短边 ≥ 640 px 时自动跳 `/tablet.html`
+  （手机的六页**左右并排**成 48 格一屏 + X/Y 两个视图，**没有 Digital Fader**）。判定用屏幕短边而不是 UA
+  （iPad 的 UA 自称 Mac）；iPad 分屏等被误判成手机时可加 `?device=tablet`，想反过来看手机版用
+  `?device=phone`，`?device=auto` 清掉记忆。详见 [docs/spec/tablet-page.md](docs/spec/tablet-page.md)。
 - **必须是 `https://`**：浏览器只在安全上下文中提供 DeviceOrientation/DeviceMotion，
   `http://` 下传感器接口不存在，手机端会启动失败。Bridge 会自动生成自签名证书（含 SAN），
   首次访问需在浏览器里接受一次证书警告；证书到期前 30 天或本机 IP 变化时会自动重签。
@@ -74,6 +78,9 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
 - `CONTEXT.md` — 领域术语表
 - `docs/adr/0001-web-first-architecture.md` — 架构决策
 - `docs/adr/0002-json-mapping-config.md` — 映射配置格式
+- `docs/spec/shortcut-pad.md` — Shortcut Pad（含 CC 廊条）
+- `docs/spec/xy-pad.md` — X/Y Pad 二维控制面
+- `docs/spec/tablet-page.md` — 平板专用页（设备分流 / 48 格铺一页 / X/Y 自适应）
 - `docs/spec/mode-a-pose-debug.md` — Mode A 抬手融合标定
 - `docs/spec/mode-b-palm-flip.md` — Mode B 翻腕（重力向量融合 + 滤波量纲说明）
 - `docs/spec/mode-c-shake.md` — Mode C 摇晃弯音（峰值标定，主控待接）

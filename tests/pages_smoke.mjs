@@ -5,13 +5,20 @@ import vm from 'node:vm';
 import { web } from './_paths.mjs';
 
 const pages = {
-  home: { html: 'index.html', scripts: [] },
-  xy: { html: 'xy.html', scripts: ['xy.js'] },
+  // 首页与各手机页都先加载 device.js（平板会被它送去 /tablet.html）；桩里默认视口是手机，
+  // 所以手机这一路不会被跳转。
+  home: { html: 'index.html', scripts: ['device.js'], viewport: { width: 390, height: 844 } },
+  // 同一个首页、平板视口：device.js 应当把用户送去 /tablet.html（"网页服务自主判断设备"）
+  homeTablet: { html: 'index.html', scripts: ['device.js'], viewport: { width: 1024, height: 768 } },
+  xy: { html: 'xy.html', scripts: ['device.js', 'xy.js'] },
   // 格子那一层（建格/绘制/按下/离线拒按/震动）在 padgrid.js 里，pad.html 与推子页共用它
-  fader: { html: 'fader.html', scripts: ['padgrid.js', 'fusion.js', 'vibrato.js', 'app.js'] },
+  fader: { html: 'fader.html', scripts: ['device.js', 'padgrid.js', 'fusion.js', 'vibrato.js', 'app.js'] },
   lab: { html: 'vibrato-lab.html', scripts: ['vibrato.js', 'vibrato-lab.js'] },
   latency: { html: 'latency.html', scripts: ['fusion.js', 'latency.js'] },
-  pad: { html: 'pad.html', scripts: ['padgrid.js', 'pad.js'] },
+  pad: { html: 'pad.html', scripts: ['device.js', 'padgrid.js', 'pad.js'] },
+  // 平板专用页：48 格铺一页（一行 = 手机的一页）+ X/Y 视图
+  tablet: { html: 'tablet.html', scripts: ['device.js', 'padgrid.js', 'tablet.js', 'xy.js'],
+            viewport: { width: 1024, height: 768 } },
   calFlip: { html: 'calibrate-flip.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calLift: { html: 'calibrate-lift.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
   calShake: { html: 'calibrate-shake.html', scripts: ['fusion.js', 'calibrate-wizard.js'] },
@@ -25,6 +32,15 @@ function makeDom(page) {
   const html = htmlOf(page);
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
   const profile = (html.match(/data-profile="([^"]+)"/) || [])[1] || 'lift';
+  // 设备路由声明在 <html data-route="…"> 上（device.js 读它决定要不要跳走）。
+  const route = (html.match(/data-route="([^"]+)"/) || [])[1] || '';
+  // 初始 class（例如 <main id="viewXy" class="hidden">）：桩按标签上的 class 预置，
+  // 否则"哪个视图一开始是显示的"这类断言在桩里永远成立、等于没测。
+  const classes = {};
+  for (const m of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
+    const cls = (m[0].match(/\bclass="([^"]*)"/) || [])[1];
+    if (cls) classes[m[1]] = cls.split(/\s+/).filter(Boolean);
+  }
   const nodes = {};
   // 控件面上的位置是 CSS 变量驱动的（--mx/--my），所以桩里的 style 要支持 setProperty
   const styleProto = {
@@ -65,10 +81,16 @@ function makeDom(page) {
   };
   const document = {
     hidden: false,
+    // device.js 在 <head> 里读 documentElement.dataset.route
+    documentElement: { dataset: { route } },
     body: { dataset: { profile } },
     getElementById(id) {
       if (!ids.has(id)) throw new Error(`getElementById('${id}') is not in ${page}.html`);
-      return (nodes[id] ||= mk(id));
+      if (!nodes[id]) {
+        nodes[id] = mk(id);
+        for (const c of (classes[id] || [])) nodes[id].classList.add(c);
+      }
+      return nodes[id];
     },
     createElement: (tag) => mk('new-' + tag, tag),
     querySelectorAll: () => [],
@@ -82,9 +104,14 @@ function loadPage(page) {
   const listeners = {};
   const sockets = [];
   const buzzes = [];          // navigator.vibrate(ms) 的调用记录（"按下有没有震动确认"）
+  const vp = pages[page].viewport || { width: 390, height: 844 };
   const win = {
-    document, location: { protocol: 'http:', host: '127.0.0.1:8765', search: '', href: 'http://x/' },
+    document,
+    // replace() 记下来：平板打开手机页/首页时，device.js 应当把用户送到 /tablet.html
+    location: { protocol: 'http:', host: '127.0.0.1:8765', search: '', href: 'http://x/',
+                replace(u) { this.replaced = u; } },
     history: { replaceState() {} },
+    innerWidth: vp.width, innerHeight: vp.height,      // 设备判定的唯一依据（见 device.js）
     navigator: { wakeLock: { request: async () => ({ addEventListener() {}, release() {} }) },
                  vibrate: (ms) => buzzes.push(ms) },
     performance: { now: () => Date.now() },
@@ -108,7 +135,7 @@ function loadPage(page) {
     URLSearchParams,
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     devicePixelRatio: 2,
-    screen: { width: 390, height: 844, orientation: { angle: 0, type: 'portrait-primary' } },
+    screen: { width: vp.width, height: vp.height, orientation: { angle: 0, type: 'portrait-primary' } },
     alert() {}, console,
   };
   win.window = win;
@@ -209,11 +236,20 @@ function check(name, ok, detail) {
 }
 
 {
-  // 首页（MIDI Deck）只有模块列表，没有脚本：它不能依赖任何 id
+  // 首页（MIDI Deck）只有模块列表 + 一个设备判定脚本：它不能依赖任何页面的 id
   const home = loadPage('home');
-  check('home: 首页只是模块列表，不加载任何脚本',
-    files.home.length === 0 && Object.keys(home.win).length > 0,
-    `${htmlOf('home').includes('/fader.html') ? '有' : '缺'} Digital Fader 入口 / ${htmlOf('home').includes('/pad.html') ? '有' : '缺'} Shortcut Pad 入口`);
+  check('home: 首页只加载设备判定脚本（device.js），不依赖任何页面 id',
+    files.home.join(',') === 'device.js' && Object.keys(home.win).length > 0,
+    `scripts=${files.home.join(',') || '（无）'}`);
+  check('home: 手机视口留在首页（不跳转）',
+    home.win.PhoneMidiDevice.isTablet() === false && !home.win.location.replaced,
+    '390×844 → 手机');
+  // 同一份 HTML、平板视口：网页自己判定并送去平板版（用户要求"自主判断当前设备"）
+  const homeTablet = loadPage('homeTablet');
+  check('home: 平板视口自动进入 /tablet.html',
+    homeTablet.win.PhoneMidiDevice.detectedTablet() === true
+    && homeTablet.win.location.replaced === '/tablet.html',
+    `1024×768 → ${homeTablet.win.location.replaced || '（没跳）'}`);
   // 三个模块都必须能从首页点到（少一个就是"功能做了但进不去"）
   const homeHtml = htmlOf('home');
   const wanted = [['Digital Fader', '/fader.html'], ['Shortcut Pad', '/pad.html'], ['X/Y Pad', '/xy.html']];
@@ -428,6 +464,121 @@ function check(name, ok, detail) {
   check('pad: 重连后按同一格是一对干净的 down+up（onclose 时清了残留记录）',
     ws2.sent.length === 2 && ws2.sent[0].phase === 'down' && ws2.sent[1].phase === 'up',
     JSON.stringify(ws2.sent));
+}
+
+// ── 平板页（/tablet.html）：六页左右并排 + X/Y，没有推子 ─────────────────────
+// 用户需求：平板网页自己判断设备；48 个方形按钮铺满一页（**六页左右并排，每页仍和手机一样
+// 是 2 列 × 4 行**）；X/Y 单独一个视图且自适应。
+{
+  const { win, sockets, buzzes } = loadPage('tablet');
+  const grid = win.document.getElementById('grid');
+  const viewPad = win.document.getElementById('viewPad');
+  const viewXy = win.document.getElementById('viewXy');
+  const views = win.document.getElementById('views');
+  const plane = win.document.getElementById('plane');
+  const pageEls = grid.children;                       // 6 个 .pgrid
+  const cellsOf = (p) => pageEls[p].children;          // 每页 8 格
+  const cellText = (p, s) => cellsOf(p)[s].children[0].textContent;
+  const press = (p, s, pointerId) => cellsOf(p)[s].dispatch('pointerdown', { pointerId, preventDefault() {} });
+  const release = (p, s, pointerId) => cellsOf(p)[s].dispatch('pointerup', { pointerId });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  check('tablet: 1024×768 被判成平板（没被送回手机页）',
+    win.PhoneMidiDevice.isTablet() === true && !win.location.replaced,
+    `${win.innerWidth}×${win.innerHeight}，replaced=${win.location.replaced || '（无）'}`);
+
+  // 结构：六页并排，每页 8 格 = 48 格；每页的形状与手机一致（2 列 × 4 行）
+  const totalCells = pageEls.reduce((n, el) => n + el.children.length, 0);
+  check('tablet: 六页 × 8 格 = 48 个格子（一屏全在）',
+    pageEls.length === 6 && totalCells === 48,
+    `${pageEls.length} 页 / ${totalCells} 格`);
+  const tabletHtml2 = htmlOf('tablet');
+  check('tablet: 每页仍是 2 列 × 4 行（与手机、padgrid.js 的形状一致）',
+    /\.pgrid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*1fr\)/.test(tabletHtml2)
+    && /\.pgrid\s*\{[^}]*grid-template-rows:\s*repeat\(4,\s*1fr\)/.test(tabletHtml2)
+    && /const COLS = 2;/.test(fs.readFileSync(web('padgrid.js'), 'utf8'))
+    && /const ROWS = 4;/.test(fs.readFileSync(web('padgrid.js'), 'utf8')),
+    'CSS 2×4 = padgrid.js COLS/ROWS = 手机的形状');
+  check('tablet: 默认显示 48 格视图，X/Y 藏起',
+    !viewPad.classList.contains('hidden') && viewXy.classList.contains('hidden'),
+    `viewPad hidden=${viewPad.classList.contains('hidden')}`);
+
+  // 自适应：每页的宽高由同一个格子边长推出 → 格子必然是正方形（不是被拉扁的矩形）
+  await sleep(10);                       // 等首帧的 fitPad()
+  const pw = parseInt(pageEls[0].style.width, 10);
+  const ph = parseInt(pageEls[0].style.height, 10);
+  const cellW = (pw - 8) / 2;
+  const cellH = (ph - 8 * 3) / 4;
+  check('tablet: 48 个格子是正方形（每页宽高用同一个边长算）',
+    /^\d+px$/.test(pageEls[0].style.width) && Math.abs(cellW - cellH) < 0.001,
+    `每页 ${pageEls[0].style.width} × ${pageEls[0].style.height}，每格 ${cellW}×${cellH}`);
+
+  const ws = sockets[0];
+  check('tablet: 打开一条面板 WebSocket（/ws）', !!ws && /\/ws$/.test(ws.url), ws ? ws.url : 'no socket');
+  check('tablet: 未连接时按下不发消息', (() => { press(0, 0, 1); return ws.sent.length === 0; })(),
+    `${ws.sent.length} message(s)`);
+
+  ws.readyState = 1; ws.onopen();
+
+  // 六页布局：第 p 页进第 p 个网格，页内顺序与手机一致
+  const layout = { pages: Array.from({ length: 6 }, (_, p) => ({
+    title: '页' + (p + 1),
+    cells: Array.from({ length: 8 }, (_, s) => ({ text: `P${p}C${s}`, color: '#ffffff', ink: '#1c1e26' })),
+  })) };
+  ws.onmessage({ data: JSON.stringify({ type: 'pad_layout', layout }) });
+  check('tablet: 六页按页序并排（每页 8 格、页内顺序不变）',
+    cellText(0, 0) === 'P0C0' && cellText(0, 7) === 'P0C7'
+    && cellText(1, 0) === 'P1C0' && cellText(5, 7) === 'P5C7',
+    `[0,0]=${cellText(0, 0)} [0,7]=${cellText(0, 7)} [1,0]=${cellText(1, 0)} [5,7]=${cellText(5, 7)}`);
+  check('tablet: 每格带上"第几页 · 页标题"（页标题没有位置常驻，悬停能看到）',
+    cellsOf(5)[7].title === '第 6 页 · 页6', cellsOf(5)[7].title);
+
+  // 编号必须与手机完全一致：手机第 p 页第 s 格 = p×8+s
+  press(5, 7, 2);
+  check('tablet: 第 6 页第 8 格发编号 47（与手机 p×8+s 是同一个数）',
+    ws.sent.at(-1).kind === 'trigger' && ws.sent.at(-1).id === 47 && ws.sent.at(-1).phase === 'down',
+    JSON.stringify(ws.sent.at(-1)));
+  release(5, 7, 2);
+  check('tablet: 松开配一条同编号的 up',
+    ws.sent.at(-1).id === 47 && ws.sent.at(-1).phase === 'up', JSON.stringify(ws.sent.at(-1)));
+  check('tablet: 按下有震动确认（有马达的设备）', buzzes.length >= 1, `vibrate ×${buzzes.length}`);
+
+  // 视图切换：48 格 ↔ X/Y
+  const fakeTab = (name) => ({ dataset: { view: name } });
+  const clickTab = (name) => views.dispatch('click', { target: { closest: () => fakeTab(name) } });
+  clickTab('xy');
+  await sleep(10);
+  check('tablet: 切到 X/Y 视图（48 格藏起、X/Y 显示）',
+    viewPad.classList.contains('hidden') && !viewXy.classList.contains('hidden'),
+    '顶栏两个视图，不用翻页');
+  check('tablet: X/Y 面按舞台算成最大的正方形（自适应平板尺寸）',
+    plane.style.width === '300px' && plane.style.height === '300px',
+    `${plane.style.width} × ${plane.style.height}（舞台 300×300）`);
+  clickTab('pad');
+  await sleep(10);
+  check('tablet: 切回 48 格视图', !viewPad.classList.contains('hidden')
+    && viewXy.classList.contains('hidden'), '状态保持');
+
+  // 切走视图时必须把按住的键松开，否则 DAW 里会留下关不掉的 Note（与手机翻页同一条）
+  const beforeSwitch = ws.sent.length;
+  press(0, 5, 3);                        // 第 1 页第 6 格 = 编号 5
+  clickTab('xy');
+  check('tablet: 切视图时自动松开按住的格子（不留悬挂 Note）',
+    ws.sent.length === beforeSwitch + 2 && ws.sent.at(-1).id === 5 && ws.sent.at(-1).phase === 'up',
+    JSON.stringify(ws.sent.slice(beforeSwitch)));
+
+  // 平板没有 Digital Fader：页面里不能有它的入口，也不加载传感器链
+  check('tablet: 没有 Digital Fader 入口（不引用 fader.html / fusion.js）',
+    !/href="\/?fader\.html/.test(tabletHtml2) && !/src="fusion\.js/.test(tabletHtml2),
+    '只有 48 格与 X/Y 两个视图');
+
+  // 手机专用页都声明了 data-route="phone"：平板误入会被送去 /tablet.html（机制见首页那条）
+  for (const page of ['pad', 'fader', 'xy']) {
+    const h = htmlOf(page);
+    check(`${page}: 声明 data-route="phone" 并加载 device.js（平板会被送去平板版）`,
+      /data-route="phone"/.test(h) && /src="device\.js/.test(h),
+      '同一个网址按设备分流');
+  }
 }
 
 // ── 推子页底部的第 4 页（CC 廊）条 ───────────────────────────────────────────

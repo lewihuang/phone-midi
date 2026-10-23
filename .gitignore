@@ -26,9 +26,9 @@ Thumbs.db
 
 # Agent 运行时的排查草稿（可丢弃，别提交）
 .box-agent-scratch/
+# Agent 写完文件留下的边车标记（box-agent 的 .artifact.json，27 字节的元数据）
+*.artifact.json
 
 # 打包产物（迁移包）
 release/
-nul
 .box-agent/
-docs/

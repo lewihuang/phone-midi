@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-route="phone">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Digital Fader</title>
 <link rel="stylesheet" href="ios.css?v=11">
+<!-- 平板没有 Digital Fader（用户需求）：误入就回平板页。 -->
+<script src="device.js?v=1"></script>
 <style>
   /* 页面专属：单栏 360px。面板切换靠 .hidden / .show（app.js 在用这两个类名，必须保留）。 */
   body { display: flex; flex-direction: column; align-items: center; }
@@ -141,7 +143,7 @@
 
 <p class="foot-brand">Powered by Levi黄</p>
 
-<script src="padgrid.js?v=2"></script>
+<script src="padgrid.js?v=3"></script>
 
 <script src="fusion.js?v=23"></script>
 

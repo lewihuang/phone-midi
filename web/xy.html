@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-route="phone">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>X/Y Pad</title>
 <link rel="stylesheet" href="ios.css?v=11">
+<!-- 平板有专用页（48 格 / X/Y）：误入手机版就送过去。 -->
+<script src="device.js?v=1"></script>
 <style>
   /* 页面专属：顶栏 / 正方形控制面 / 一行读数+动作 / 一行 CC 配置。整屏不滚动。 */
   body { display: flex; flex-direction: column; align-items: center; }

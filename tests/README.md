@@ -11,10 +11,10 @@ powershell -File tests\run.ps1
 |------|------|
 | `vibrato.test.mjs` | `web/vibrato.js` 整条链：静音/门限、线性与上限、重力与慢速抑制、通道选择与换轴、迟滞、可用性、输出率与台阶、时间戳抖动、一次性标定、延迟（与解析相位对照）、弯音换算、传感器停摆保护、**慢速动作静音（振荡判定）与归中** |
 | `bridge_protocol_check.py` | 真实 `MappingEngine`：`fused_vibrato` 不再二次平滑、死区不重复施加、14 位分辨率、中心恰为 8192、目标类型回退、**弯音守护（dead-man）** |
-| `bridge_boot_check.py` | **真的把 Bridge 起来**（`--no-gui --no-ssl --port 8791`）并抓取它服务的页面：验证 CLI 参数、handler 构造、守护任务、静态文件全部接通；并验证**第二个实例拒绝共用端口**（见下） |
+| `bridge_boot_check.py` | **真的把 Bridge 起来**（`--no-gui --no-ssl --port 8791`）并抓取它服务的页面：验证 CLI 参数、handler 构造、守护任务、静态文件全部接通（含平板页 `tablet.html` / `device.js` / `tablet.js`）；并验证**第二个实例拒绝共用端口**（见下） |
 | `bridge_ui_check.py` | 精简监视窗（不弹窗）：只保留 值+进度条、置顶、下限 420×84 且可拉伸、展开态保持原样、端口占用时窗口报错、START/STOP 不阻塞界面、窗口几何记忆 |
 | `measure_window.py` | **手工核对工具**：真的把窗口映射出来量尺寸与进度条厚度（会短暂弹窗几秒）。未映射的窗口 `winfo_*` 不说真话，这类"窗口大小不对"的问题只能这样量 |
-| `pages_smoke.mjs` | 桩 DOM 上**真实加载** `index.html` / `vibrato-lab.html` 的脚本：元素 id 齐全、表格/滑块/分段控件构建、诊断渲染 |
+| `pages_smoke.mjs` | 桩 DOM 上**真实加载**各页面的脚本：元素 id 齐全、表格/滑块/分段控件构建、诊断渲染；**平板页 48 格**（六页左右并排、每页 2×4、正方形、编号 0–47 与手机一致、视图切换与 X/Y 自适应）与**设备分流**（手机视口不跳、平板视口进 `/tablet.html`） |
 
 ## 约定
 

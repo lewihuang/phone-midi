@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-route="tablet">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>MIDI Deck — 平板</title>
+<link rel="stylesheet" href="ios.css?v=12">
+<!-- 判定必须在渲染前跑：手机误入本页会被立刻送回 /pad.html，平板留在本页。 -->
+<script src="device.js?v=1"></script>
+<style>
+  /* 平板专用页：顶栏两个视图（48 格 / X/Y），没有 Digital Fader（平板拿在桌上的姿势
+     不适合做抬手/翻腕/摇晃，用户明确不需要）。
+     为什么是单独一页而不是给 pad.html 加媒体查询：48 格的**结构**与手机的 6 页 × 8 格不同
+     （一屏 48 格、没有页签、字号跟着格子算），塞进同一个文件会让两边互相牵制；而格子本身
+     的建格/绘制/按下/松开/离线拒按/震动全在 padgrid.js 里，两个宿主共用同一份实现。 */
+  html, body { height: 100%; }
+  body {
+    display: flex; flex-direction: column; gap: 8px;
+    height: 100vh;                 /* 老 iPadOS 不认 dvh 时的退路 */
+    height: 100dvh; overflow: hidden; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+
+  header { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; min-height: 38px; }
+  .brand { margin: 0; font-size: 20px; line-height: 1.1; letter-spacing: -0.02em; }
+  /* 视图切换 = iOS 分段控件，放中间（两边是品牌与连接状态，margin auto 把它挤到中间） */
+  #views { display: flex; gap: 2px; background: var(--fill); border-radius: 10px;
+           padding: 2px; margin-inline: auto; }
+  #views .tab { min-width: 112px; height: 38px; padding: 0 18px;
+                border: 0; border-radius: 8px; background: transparent;
+                color: var(--label-2); font: inherit; font-size: 16px; font-weight: 600; }
+  #views .tab.active { background: var(--card); color: var(--label);
+                       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+
+  main { flex: 1 1 auto; min-height: 0; width: 100%; }
+  /* !important：下面 #viewPad / #viewXy 是 ID 选择器，普通 .hidden 压不过它们 */
+  main.hidden { display: none !important; }
+
+  /* ── 48 格：六页左右并排（每页 2 列 × 4 行，和手机一模一样）────────────────
+     六页 = 6 个独立的 2×4 网格，页与页之间留更宽的一道缝（gap 由 tablet.js 按格子大小算）；
+     每页仍是一个 padgrid 实例（page = 0…5），所以触发编号还是 `页号 × 8 + 序号`。
+     宽高由 tablet.js 按可用空间算成"正方形格子"，--cell-size 只用于字号。 */
+  #viewPad { display: grid; place-items: center; }
+  #grid { display: flex; align-items: center; justify-content: center; }
+  .pgrid {
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(4, 1fr);
+  }
+  .pgrid .cell {
+    /* 字号跟着格子走，但上下都夹住：12 列并排后格子会明显比手机小，照手机那档字号会挤成三行 */
+    font-size: clamp(12px, calc(var(--cell-size, 48px) * 0.22), 22px);
+    padding: 4px; border-radius: 12px; line-height: 1.15;
+  }
+  .pgrid.offline .cell { pointer-events: none; opacity: 0.4; }
+
+  /* ── X/Y：整个面自适应到平板尺寸 ─────────────────────────────────────────
+     横屏时控制项放右栏，pad 占满剩下的高度（手机那种"pad 下面叠四行"会把 pad 压到很小）；
+     竖屏时上下排。具体像素由 tablet.js 量舞台后写死成正方形。 */
+  #viewXy { display: flex; }
+  .xy-layout { display: flex; gap: 18px; width: 100%; height: 100%; align-items: stretch; }
+  .xy-stage { flex: 1 1 auto; min-width: 0; min-height: 0; display: grid; place-items: center; }
+  .xy-stage .xy-plane { width: min(100%, 78vh); }   /* JS 量完舞台后会改成精确的 px（正方形） */
+  .xy-stage .xy-marker { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
+  .xy-side { flex: 0 0 300px; display: flex; flex-direction: column;
+             justify-content: center; gap: 12px; }
+  .xy-side .xy-actions .btn { flex: 1 1 0; min-height: 46px; font-size: 17px; margin-top: 0; }
+  .xy-presets { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  .xy-presets .btn { min-height: 42px; font-size: 16px; }
+  /* 选中态：xy.js 按"当前两个 CC 号是否正好是这套预设"加 .sel（与 xy.html 同一条规则）。 */
+  .xy-presets .btn.sel { background: var(--blue); color: #fff; }
+  .xy-cfg { justify-content: flex-start; }
+  @media (orientation: portrait) {
+    .xy-layout { flex-direction: column; }
+    /* 竖屏时舞台在上面（正方形用满宽度），控制项在下面。整栏限宽并居中：820 宽的面板上
+       让输入框拉成 260 px 只会显得松垮。 */
+    .xy-side { flex: 0 0 auto; width: 100%; max-width: 720px; margin-inline: auto; }
+    .xy-cfg .range-input { flex: 0 0 96px; width: 96px; }
+  }
+
+  #err { flex: 0 0 auto; margin: 0; min-height: 16px; text-align: center;
+         font-size: 13px; color: var(--orange); }
+  .foot-brand { margin: 0; }
+  .foot-brand a { color: var(--label-2); text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 class="brand">MIDI Deck</h1>
+  <nav id="views">
+    <button class="tab active" type="button" data-view="pad">48 格</button>
+    <button class="tab" type="button" data-view="xy">X/Y</button>
+  </nav>
+  <span class="status wait" id="conn">连接中…</span>
+</header>
+
+<!-- 48 格视图：6 页 × 8 格全部铺在一页上（一行 = 手机上的一页） -->
+<main id="viewPad">
+  <div id="grid"></div>
+</main>
+
+<!-- X/Y 视图：元素 id 与 xy.html 完全一致，直接复用 xy.js（它按 id 取元素）。
+     这样平板的 X/Y 与手机的是**同一份实现**，不存在两套行为。 -->
+<main id="viewXy" class="hidden">
+  <div class="xy-layout">
+    <div class="xy-stage">
+      <div class="xy-plane unset" id="plane">
+        <div class="xy-h"></div>
+        <div class="xy-v"></div>
+        <div class="xy-marker"></div>
+      </div>
+    </div>
+    <aside class="xy-side">
+      <div class="xy-actions">
+        <button class="btn btn-ghost" id="btnCenter" type="button">回中</button>
+        <button class="btn btn-ghost" id="btnFreeze" type="button">冻结</button>
+      </div>
+
+      <p class="xy-readout dim" id="readout">未连接</p>
+      <p class="xy-readout dim" id="hint"></p>
+
+      <div class="xy-presets" id="presets">
+        <span class="range-label">快速预设</span>
+        <button class="btn btn-ghost" id="presetExpr" type="button"
+                title="X = CC1（调制/颤音）、Y = CC11（表情）；只填这两个号，仍可手改。注意与推子同用 CC1，别和推子同时跑">弦乐表情</button>
+        <button class="btn btn-ghost" id="presetXy" type="button"
+                title="X = CC20、Y = CC21（默认）；只填这两个号，仍可手改">X/Y Pad</button>
+      </div>
+
+      <div class="xy-cfg">
+        <span class="range-label">X CC</span>
+        <input class="range-input" id="ccX" type="number" min="0" max="127" step="1" value="20">
+        <span class="range-label">Y CC</span>
+        <input class="range-input" id="ccY" type="number" min="0" max="127" step="1" value="21">
+        <span class="range-label">Ch</span>
+        <select class="cfg-select" id="selCh" aria-label="MIDI 通道"></select>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<p id="err"></p>
+<p class="foot-brand">Powered by Levi黄 · <a href="/?device=phone">手机版</a></p>
+
+<!-- padgrid.js：格子实现（与手机同一份）；tablet.js：48 格宿主 + 视图切换 + 两个视图的自适应；
+     xy.js：X/Y 控制器（与手机同一份，靠相同 id 复用） -->
+<script src="padgrid.js?v=3"></script>
+<script src="tablet.js?v=1"></script>
+<script src="xy.js?v=2"></script>
+</body>
+</html>

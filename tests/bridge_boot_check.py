@@ -22,6 +22,29 @@ def check(name, ok, detail=""):
     if not ok:
         fails.append(name)
 
+# ── 静态目录绝不能是盘符根 ───────────────────────────────────────────────────
+# 打包态下旧的上升查找（`base_dir.parent / "web"`）会一路爬到 `F:/`；它 exists()，于是进了
+# aiohttp 的 add_static，随后 `Path('F:/').name == ''` 让 StaticResource 抛
+# `WindowsPath('F:/') has an empty name` —— 表现是"每次 START 都失败、日志里只有一个认不出的路径"。
+# 这里直接钉住 `_web_dir` 的契约：任何候选落在盘符根就跳过，全不命中返回 None 而不是抛异常。
+import pathlib, tempfile
+check("web dir is never a drive root",
+      server._web_dir(pathlib.Path("F:/")) is None
+      and server._web_dir(pathlib.Path("F:/nonexistent/deep/dir")) is None,
+      "F:/ 与深空目录都不被接受（否则 aiohttp 会抛 empty name）")
+_real_web = server._web_dir(server._base_dir())
+check("source-mode web dir resolves to real web/",
+      _real_web is not None and _real_web.name == "web" and (_real_web / "index.html").exists(),
+      str(_real_web))
+# 打包态（_MEIPASS / dist）也必须找到真正带 index.html 的 web，而不是爬到盘符根就交差。
+with tempfile.TemporaryDirectory() as _td:
+    fake = pathlib.Path(_td) / "dist"
+    (fake / "web").mkdir(parents=True)
+    (fake / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
+    _dist_web = server._web_dir(fake)
+    check("packaged layout (dist/web) is found",
+          _dist_web is not None and _dist_web == fake / "web", str(_dist_web))
+
 proc = subprocess.Popen(
     [sys.executable, os.path.join(ROOT, "bridge", "server.py"), "--no-gui",
      "--no-ssl", "--port", str(PORT), "--pb-idle-ms", "300"],
@@ -71,6 +94,18 @@ try:
             check("serves the shared grid script (padgrid.js)",
                   "PhoneMidiPadGrid" in pgrid and "createGrid" in pgrid and "padgrid.js?v=" in idx,
                   f"{len(pgrid)} bytes，fader.html 引到了它")
+
+            # 平板页：同一个网址按设备分流（device.js）+ 专用页（48 格 / X/Y）。页面或脚本
+            # 404 的话平板会静默退回手机版（或者白屏），所以这里同样钉住"真的服务得出来"。
+            home = fetch("/")
+            tab = fetch("/tablet.html")
+            dev = fetch("/device.js")
+            tjs = fetch("/tablet.js")
+            check("serves the tablet page, its scripts and the device switch",
+                  'data-route="tablet"' in tab and "tablet.js?v=" in tab and "device.js?v=" in tab
+                  and "PhoneMidiDevice" in dev and "data-route=\"home\"" in home
+                  and "createGrid" in tjs and "page: p" in tjs,
+                  f"tablet.html {len(tab)} / device.js {len(dev)} / tablet.js {len(tjs)} bytes")
 
             # ── the reported bug: a second instance must NOT silently share the port ──
             # With SO_REUSEADDR (the old behaviour on Windows) a second Bridge bound the same

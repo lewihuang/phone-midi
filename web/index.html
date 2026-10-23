@@ -1,16 +1,20 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-route="home">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>MIDI Deck</title>
 <link rel="stylesheet" href="ios.css?v=11">
+<!-- 平板打开根地址 = 自动进平板版（/tablet.html）；手机留在本页。判定见 device.js。 -->
+<script src="device.js?v=1"></script>
 <style>
   /* 首页：只有功能模块列表（卡片只留名字，不带说明）。点进去才是具体工具。 */
   body { display: flex; flex-direction: column; align-items: center; }
   .title-block { width: 100%; max-width: 420px; margin-bottom: 16px; }
   h1 { margin-bottom: 2px; }
+  .foot-brand a { color: var(--label-2); text-decoration: underline; }
+  .device-switch { margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -35,6 +39,7 @@
 </nav>
 
 <p class="foot-brand">Powered by Levi黄</p>
+<p class="foot-brand device-switch"><a href="/?device=tablet">平板版</a></p>
 
 </body>
 </html>
