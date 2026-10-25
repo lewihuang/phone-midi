@@ -1,4 +1,4 @@
-# Build
+﻿# Build
 bridge/build/
 bridge/dist/
 bridge/*.spec
@@ -32,3 +32,11 @@ Thumbs.db
 # 打包产物（迁移包）
 release/
 .box-agent/
+
+# 本地 agent / 构建工具与生成物（不入库）
+.agents/
+.dsh/
+.specify/
+skills-lock.json
+.flutter-plugins-dependencies
+android/.kotlin/
