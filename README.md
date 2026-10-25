@@ -90,3 +90,7 @@ pyinstaller --noconfirm --onefile --noconsole --name "MIDI Deck" --icon midi-dec
 ## 参考项目
 
 - [Phone-MIDI-Controller](https://github.com/amstlkqp114514/Phone-MIDI-Controller) — Android+Python，固定映射
+
+## License
+
+[MIT](LICENSE) © 2026 lewihuang
